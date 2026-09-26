@@ -1,5 +1,6 @@
 package dev.kinetick.kinetic.events
 
+import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -7,13 +8,14 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
-import com.google.gson.JsonObject
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
+import dev.kinetick.kinetic.api.Wire
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.Response
@@ -21,9 +23,12 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 
 /**
- * Foreground service holding the GET /events SSE open. Input-needed events
- * (questionnaire.ask, permission.ask) raise heads-up notifications; every
- * event is relayed to [EventBus] for in-app UI.
+ * Foreground service holding the Runtime event stream (GET /events) open.
+ *
+ * Input-needed events raise heads-up notifications:
+ *  - `questionnaire.ask` → `request.title` / first step question
+ *  - `permission.ask`    → `request.toolName`
+ * Every event is relayed to [EventBus] for the in-app UI.
  */
 class EventStreamService : Service() {
 
@@ -34,11 +39,11 @@ class EventStreamService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Notify.ensureChannels(this)
-        val notification = Notify.streamNotification(this, "Connected to kcode")
         ServiceCompat.startForeground(
-            this, Notify.NOTIF_STREAM, notification,
-            if (Build.VERSION.SDK_INT >= 29)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
+            this,
+            Notify.NOTIF_STREAM,
+            Notify.streamNotification(this, "Connecting to kcode…"),
+            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
         )
         connect()
         return START_STICKY
@@ -51,44 +56,63 @@ class EventStreamService : Service() {
             val client = KcodeClient(base)
             source?.cancel()
             source = client.eventStream(object : EventSourceListener() {
+                override fun onOpen(es: EventSource, response: Response) {
+                    updateNotification("Connected to $base")
+                }
+
                 override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
-                    handleEvent(type ?: "message", data)
+                    handleEvent(type, data)
                 }
 
                 override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
-                    // Reconnect with backoff via START_STICKY restart cycle
-                    stopSelf()
+                    updateNotification("Disconnected — retrying")
+                    // START_STICKY restarts the service; pause first to avoid a hot loop.
+                    scope.launch {
+                        delay(5000)
+                        stopSelf()
+                    }
                 }
             })
         }
     }
 
-    private fun handleEvent(type: String, data: String) {
-        EventBus.publish(type, data)
-        val obj = runCatching { com.google.gson.JsonParser.parseString(data).asJsonObject }
-            .getOrNull() ?: return
-        when (type) {
+    private fun updateNotification(text: String) {
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        nm.notify(Notify.NOTIF_STREAM, Notify.streamNotification(this, text))
+    }
+
+    private fun handleEvent(type: String?, data: String) {
+        val runtimeType = Wire.runtimeEventType(data) ?: type ?: return
+        EventBus.publish(runtimeType, data)
+
+        when (runtimeType) {
             "questionnaire.ask" -> {
-                val sid = obj.str("sessionId") ?: return
+                val (questionnaire, agentName) = Wire.questionnaireFromEvent(data) ?: return
+                val question = questionnaire?.title
+                    ?: questionnaire?.steps?.firstOrNull()?.question
+                    ?: "The agent is asking a question"
                 Notify.inputNeeded(
-                    this, sid, "Question from kcode",
-                    obj.str("question") ?: obj.str("title") ?: "The agent is asking a question",
-                    sid.hashCode()
+                    this,
+                    sessionKey = agentName ?: questionnaire?.id ?: "kcode",
+                    title = "Question from kcode",
+                    body = question,
+                    id = (questionnaire?.id ?: question).hashCode(),
                 )
             }
+
             "permission.ask" -> {
-                val sid = obj.str("sessionId") ?: obj.str("agentName") ?: "kcode"
+                val request = Wire.permissionFromEvent(data) ?: return
                 Notify.inputNeeded(
-                    this, sid, "Permission requested",
-                    "kcode wants to run ${obj.str("toolName") ?: "a tool"}",
-                    sid.hashCode() + 1
+                    this,
+                    sessionKey = request.sessionId ?: request.agentName ?: "kcode",
+                    title = "Permission requested",
+                    body = "kcode wants to run ${request.toolName ?: "a tool"}" +
+                        (request.reason?.let { " — $it" } ?: ""),
+                    id = request.requestId.hashCode(),
                 )
             }
         }
     }
-
-    private fun JsonObject.str(key: String): String? =
-        if (has(key) && !get(key).isJsonNull) get(key).asString else null
 
     override fun onDestroy() {
         source?.cancel()
@@ -98,8 +122,7 @@ class EventStreamService : Service() {
 
     companion object {
         fun start(context: Context) {
-            val i = Intent(context, EventStreamService::class.java)
-            context.startForegroundService(i)
+            context.startForegroundService(Intent(context, EventStreamService::class.java))
         }
 
         fun stop(context: Context) {

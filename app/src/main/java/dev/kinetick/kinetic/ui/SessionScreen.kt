@@ -1,242 +1,388 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.kinetick.kinetic.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.google.gson.JsonObject
 import dev.kinetick.kinetic.KineticApp
+import dev.kinetick.kinetic.api.ChatMessage
+import dev.kinetick.kinetic.api.Interactions
 import dev.kinetick.kinetic.api.KcodeClient
-import dev.kinetick.kinetic.api.*
+import dev.kinetick.kinetic.api.PermissionRequest
+import dev.kinetick.kinetic.api.SessionInfo
+import dev.kinetick.kinetic.api.Wire
+import dev.kinetick.kinetic.events.EventBus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 
-data class ChatLine(val role: String, val text: String)
+private val TABS = listOf("Chat", "Agents", "Queue", "Info")
 
 @Composable
-fun SessionScreen(sessionId: String, onBack: () -> Unit) {
+fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String) -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
     val baseUrl by app.settings.baseUrl.collectAsState(initial = "")
     val client = remember(baseUrl) { KcodeClient(baseUrl) }
+    val store = remember(sessionId, baseUrl) { ChatStore() }
+    val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
 
-    var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
-    var streaming by remember { mutableStateOf<String?>(null) }
-    var input by remember { mutableStateOf("") }
+    var tab by remember { mutableIntStateOf(0) }
+    var session by remember { mutableStateOf<SessionInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var input by remember { mutableStateOf("") }
+    var interact by remember { mutableStateOf<Interactions?>(null) }
+    var busy by remember { mutableStateOf(false) }
     var source by remember { mutableStateOf<EventSource?>(null) }
     val listState = rememberLazyListState()
 
+    suspend fun reloadHistory() {
+        runCatching { withContext(Dispatchers.IO) { client.messages(sessionId, limit = 100) } }
+            .onSuccess { store.seed(it.messages) }
+            .onFailure { error = it.message }
+    }
+
+    suspend fun reloadInteractions() {
+        runCatching { withContext(Dispatchers.IO) { client.interactions(sessionId) } }
+            .onSuccess { interact = it }
+    }
+
+    LaunchedEffect(sessionId, baseUrl) {
+        runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+            .onSuccess { session = it }
+            .onFailure { error = it.message }
+        reloadHistory()
+        reloadInteractions()
+    }
+
+    // Runtime events relayed by the foreground service refresh the input surface.
     LaunchedEffect(sessionId) {
-        try {
-            val page = withContext(Dispatchers.IO) { client.messages(sessionId, limit = 50) }
-            // API returns newest-first on the first page; show chronological.
-            lines = page.messages.reversed().map { m ->
-                ChatLine(m.role, extractText(m.content))
+        EventBus.events.collect { ev ->
+            if (ev.data.contains(sessionId) ||
+                ev.type.startsWith("questionnaire") ||
+                ev.type.startsWith("permission")
+            ) {
+                reloadInteractions()
             }
-        } catch (e: Exception) {
-            error = "Load failed: ${e.message}"
         }
     }
 
-    LaunchedEffect(lines.size, streaming) {
-        val total = lines.size + if (streaming != null) 1 else 0
-        if (total > 0) listState.animateScrollToItem(total - 1)
+    // Safety net: while a turn runs, poll for input requests.
+    LaunchedEffect(state.running) {
+        while (state.running) {
+            delay(3000)
+            reloadInteractions()
+        }
     }
 
     DisposableEffect(sessionId) {
         onDispose { source?.cancel() }
     }
 
+    LaunchedEffect(state.messages.size, state.streamingMessageId) {
+        if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
+    }
+
+    fun startStream(text: String) {
+        source?.cancel()
+        source = client.promptStream(sessionId, text, null, object : EventSourceListener() {
+            override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
+                store.apply(Wire.streamEvent(type, data))
+            }
+
+            override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+                error = "stream failed: ${t?.message ?: response?.message}"
+            }
+        })
+    }
+
+    fun onPrimaryAction() {
+        val text = input.trim()
+        if (text.isEmpty()) return
+        input = ""
+        error = null
+        if (state.running) {
+            scope.launch {
+                runCatching { withContext(Dispatchers.IO) { client.steer(sessionId, text) } }
+                    .onFailure { error = it.message }
+            }
+        } else {
+            startStream(text)
+        }
+    }
+
+    fun onQueueAction() {
+        val text = input.trim()
+        if (text.isEmpty()) return
+        input = ""
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { client.queueEnqueue(sessionId, text) } }
+                .onFailure { error = it.message }
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Session", maxLines = 1) },
+            title = {
+                Column {
+                    Text(session?.title ?: sessionId, maxLines = 1)
+                    Text(
+                        listOfNotNull(
+                            session?.agentName,
+                            session?.workspaceDir?.substringAfterLast('/'),
+                            state.status.takeIf { it != "idle" },
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            },
             navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
             actions = {
+                if (state.running) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching { withContext(Dispatchers.IO) { client.abort(sessionId) } }
+                                .onFailure { error = it.message }
+                        }
+                    }) { Text("Abort") }
+                }
                 TextButton(onClick = {
                     scope.launch {
-                        runCatching { withContext(Dispatchers.IO) { client.abort(sessionId) } }
+                        reloadHistory()
+                        reloadInteractions()
                     }
-                }) { Text("Abort") }
+                }) { Text("Sync") }
             }
         )
-        if (error != null) {
+
+        TabRow(selectedTabIndex = tab) {
+            TABS.forEachIndexed { i, label ->
+                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
+            }
+        }
+
+        (error ?: state.error)?.let {
             Text(
-                error!!, color = MaterialTheme.colorScheme.error,
+                it,
+                color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
         }
-        LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(lines) { line -> ChatBubble(line) }
-            streaming?.let { item { ChatBubble(ChatLine("assistant", it), isStreaming = true) } }
+
+        Box(Modifier.weight(1f)) {
+            when (tab) {
+                0 -> ChatTab(state, listState) { scope.launch { reloadHistory() } }
+                1 -> AgentsTab(client, sessionId) { scope.launch { reloadHistory() } }
+                2 -> QueueTab(client, sessionId)
+                else -> InfoTab(
+                    client = client,
+                    sessionId = sessionId,
+                    session = session,
+                    onSessionChanged = {
+                        scope.launch {
+                            runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+                                .onSuccess { session = it }
+                        }
+                    },
+                    onForked = onOpenSession,
+                )
+            }
         }
-        InteractionBanner(client, sessionId) { scope.launch {
-            runCatching { withContext(Dispatchers.IO) { client.interactions(sessionId) } }
-                .getOrNull()?.let { interact ->
-                    if (interact.questionnaire != null || !interact.permissions.isNullOrEmpty()) {
-                        // Refresh transcript after answering
-                        val page = withContext(Dispatchers.IO) { client.messages(sessionId, limit = 50) }
-                        lines = page.messages.reversed().map { ChatLine(it.role, extractText(it.content)) }
-                    }
-                }
-        } }
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            OutlinedTextField(
+
+        if (tab == 0) {
+            Composer(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message…") },
-                maxLines = 4,
+                running = state.running,
+                onSend = { onPrimaryAction() },
+                onQueue = { onQueueAction() },
             )
-            Spacer(Modifier.width(8.dp))
-            FilledTonalButton(
-                enabled = input.isNotBlank() && source == null,
-                onClick = {
-                    val text = input
-                    input = ""
-                    streaming = ""
-                    scope.launch {
-                        source = withContext(Dispatchers.IO) {
-                            client.promptStream(sessionId, text, null, object : EventSourceListener() {
-                                override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
-                                    when (type) {
-                                        "delta" -> {
-                                            val d = parseStr(data, "text") ?: parseStr(data, "delta") ?: ""
-                                            streaming = (streaming ?: "") + d
-                                        }
-                                        "message" -> {
-                                            lines = lines + ChatLine("assistant", streaming ?: "")
-                                            streaming = null
-                                        }
-                                        "done", "end" -> {
-                                            streaming?.let { s -> if (s.isNotEmpty()) lines = lines + ChatLine("assistant", s) }
-                                            streaming = null
-                                            source = null
-                                        }
-                                        "error" -> {
-                                            error = parseStr(data, "error") ?: "turn error"
-                                            streaming = null
-                                            source = null
-                                        }
-                                    }
-                                }
+        }
+    }
 
-                                override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
-                                    error = "stream failed: ${t?.message ?: response?.message}"
-                                    streaming = null
-                                    source = null
-                                }
-                            })
-                        }
-                    }
+    interact?.questionnaire?.let { q ->
+        QuestionnaireDialog(
+            questionnaire = q,
+            busy = busy,
+            onSubmit = { answers ->
+                busy = true
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) { client.replyQuestionnaire(sessionId, q.id, answers) }
+                    }.onFailure { error = it.message }
+                    busy = false
+                    interact = interact?.copy(questionnaire = null)
+                    reloadHistory()
                 }
-            ) { Text("Send") }
+            },
+            onDismiss = {
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) { client.dismissQuestionnaire(sessionId, q.id) }
+                    }
+                    interact = interact?.copy(questionnaire = null)
+                }
+            },
+        )
+    }
+
+    interact?.permissions?.firstOrNull()?.let { perm: PermissionRequest ->
+        PermissionDialog(
+            request = perm,
+            busy = busy,
+            onDecision = { decision ->
+                busy = true
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            client.replyPermission(
+                                perm.agentName ?: session?.agentName ?: "",
+                                perm.requestId,
+                                decision,
+                            )
+                        }
+                    }.onFailure { error = it.message }
+                    busy = false
+                    interact = interact?.let { cur -> cur.copy(permissions = cur.permissions.drop(1)) }
+                }
+            },
+            onDismiss = { interact = interact?.let { cur -> cur.copy(permissions = emptyList()) } },
+        )
+    }
+}
+
+@Composable
+private fun ChatTab(state: TurnState, listState: LazyListState, onResync: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        if (state.needsResync) {
+            Row(
+                Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "The transcript drifted from the server.",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TextButton(onClick = onResync) { Text("Reload") }
+            }
+        }
+        state.statusMessage?.takeIf { state.status == "error" }?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(state.messages, key = { it.id ?: "m${it.hashCode()}" }) { message ->
+                MessageRow(message)
+            }
         }
     }
 }
 
 @Composable
-private fun ChatBubble(line: ChatLine, isStreaming: Boolean = false) {
-    val isUser = line.role == "user"
-    Box(
+private fun MessageRow(message: ChatMessage) {
+    val isUser = message.role == "user"
+    val isSystem = message.role == "system"
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        contentAlignment = if (isUser) androidx.compose.ui.Alignment.CenterEnd else androidx.compose.ui.Alignment.CenterStart
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        horizontalAlignment = when {
+            isUser -> Alignment.End
+            isSystem -> Alignment.CenterHorizontally
+            else -> Alignment.Start
+        }
     ) {
-        Surface(
-            tonalElevation = if (isStreaming) 3.dp else 1.dp,
-            color = if (isUser) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.widthIn(max = 340.dp)
-        ) {
-            Text(
-                line.text,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = if (line.role == "tool" || line.role == "toolResult") FontFamily.Monospace
-                                else FontFamily.Default
-                ),
-                modifier = Modifier.padding(10.dp)
+        when {
+            isUser -> Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.widthIn(max = 340.dp)
+            ) {
+                SelectionContainer {
+                    Text(message.content, Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            isSystem -> Text(
+                message.content.ifBlank { message.kind ?: "system" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            else -> Column(Modifier.fillMaxWidth()) {
+                AssistantParts(message)
+                if (message.streaming) {
+                    Text("…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+                val flags = listOfNotNull(
+                    if (message.actions?.fork == true) "forkable" else null,
+                    if (message.actions?.rewind == true) "rewindable" else null,
+                )
+                if (flags.isNotEmpty()) {
+                    Text(
+                        flags.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun InteractionBanner(client: KcodeClient, sessionId: String, onAnswered: () -> Unit) {
-    var interact by remember { mutableStateOf<Interactions?>(null) }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(sessionId) {
-        interact = runCatching<Interactions?> { withContext(Dispatchers.IO) { client.interactions(sessionId) } }.getOrNull()
-    }
-    val i = interact ?: return
-    val pending = !i.permissions.isNullOrEmpty() || i.questionnaire != null
-    if (!pending) return
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
-    ) {
-        Column(Modifier.padding(12.dp)) {
-            i.permissions?.firstOrNull()?.let { p ->
-                Text("Permission: ${p.toolName ?: "tool"}", style = MaterialTheme.typography.titleSmall)
-                p.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 3) }
-                Row {
-                    TextButton(onClick = {
-                        scope.launch {
-                            runCatching { withContext(Dispatchers.IO) { client.replyPermission(p.agentName, p.requestId, "allowOnce") } }
-                            interact = null
-                            onAnswered()
-                        }
-                    }) { Text("Allow") }
-                    TextButton(onClick = {
-                        scope.launch {
-                            runCatching { withContext(Dispatchers.IO) { client.replyPermission(p.agentName, p.requestId, "deny") } }
-                            interact = null
-                            onAnswered()
-                        }
-                    }) { Text("Deny") }
+private fun Composer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    running: Boolean,
+    onSend: () -> Unit,
+    onQueue: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(8.dp)) {
+        if (running) {
+            Text(
+                "A turn is running — Send steers it, Queue defers it.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(verticalAlignment = Alignment.Bottom) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text(if (running) "Steer the agent…" else "Message…") },
+                maxLines = 5,
+            )
+            Spacer(Modifier.width(8.dp))
+            Column {
+                FilledTonalButton(enabled = value.isNotBlank(), onClick = onSend) {
+                    Text(if (running) "Steer" else "Send")
+                }
+                if (running) {
+                    TextButton(enabled = value.isNotBlank(), onClick = onQueue) { Text("Queue") }
                 }
             }
-            if (i.questionnaire != null) {
-                Text("kcode is asking questions — open the prompt to answer",
-                     style = MaterialTheme.typography.bodyMedium)
-            }
         }
     }
 }
-
-private fun extractText(el: com.google.gson.JsonElement?): String = when {
-    el == null -> ""
-    el.isJsonPrimitive -> el.asString
-    el.isJsonObject -> {
-        val o = el.asJsonObject
-        when {
-            o.has("text") && o.get("text").isJsonPrimitive -> o.get("text").asString
-            o.has("content") -> extractText(o.get("content"))
-            else -> o.toString()
-        }
-    }
-    el.isJsonArray -> el.asJsonArray.joinToString("\n") { extractText(it) }
-    else -> el.toString()
-}
-
-private fun parseStr(json: String, key: String): String? =
-    runCatching {
-        val o = com.google.gson.JsonParser.parseString(json).asJsonObject
-        if (o.has(key) && !o.get(key).isJsonNull) o.get(key).asString else null
-    }.getOrNull()

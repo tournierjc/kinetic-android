@@ -52,4 +52,6 @@ dependencies {
 
     // Local persistence (server base URL)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

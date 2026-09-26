@@ -33,12 +33,13 @@ fun SettingsScreen(onDone: () -> Unit) {
         scope.launch {
             status = "Testing…"
             val result = withContext(Dispatchers.IO) {
-                runCatching { KcodeClient(url).health() }
+                runCatching { dev.kinetick.kinetic.api.Wire.obj(KcodeClient(url).health()) }
             }
             result.fold(
-                onSuccess = {
+                onSuccess = { health ->
+                    val version = health?.get("version")?.takeIf { it.isJsonPrimitive }?.asString ?: "?"
                     app.settings.setBaseUrl(url)
-                    status = "Connected — kcode ${it.version}"
+                    status = "Connected — kcode $version"
                     editing = false
                 },
                 onFailure = { status = "Failed: ${it.message}" }

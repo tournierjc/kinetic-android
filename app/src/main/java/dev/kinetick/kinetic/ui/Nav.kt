@@ -1,4 +1,3 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.kinetick.kinetic.ui
 
 import androidx.compose.runtime.Composable
@@ -9,7 +8,8 @@ import androidx.navigation.compose.rememberNavController
 @Composable
 fun KineticNavGraph(initialSessionId: String?) {
     val nav = rememberNavController()
-    NavHost(navController = nav, startDestination = "sessions") {
+    val start = if (initialSessionId.isNullOrBlank()) "sessions" else "session/$initialSessionId"
+    NavHost(navController = nav, startDestination = start) {
         composable("settings") {
             SettingsScreen(onDone = { nav.popBackStack() })
         }
@@ -21,7 +21,15 @@ fun KineticNavGraph(initialSessionId: String?) {
         }
         composable("session/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
-            SessionScreen(sessionId = id, onBack = { nav.popBackStack() })
+            SessionScreen(
+                sessionId = id,
+                onBack = {
+                    if (!nav.popBackStack()) nav.navigate("sessions")
+                },
+                onOpenSession = { other ->
+                    if (other != id) nav.navigate("session/$other")
+                },
+            )
         }
     }
 }

@@ -39,10 +39,10 @@ object Notify {
         )
     }
 
-    fun inputNeeded(context: Context, sessionId: String, title: String, body: String, id: Int) {
+    fun inputNeeded(context: Context, sessionKey: String, title: String, body: String, id: Int) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("session_id", sessionId)
+            putExtra("session_id", sessionKey)
         }
         val pi = PendingIntent.getActivity(
             context, id, intent,
