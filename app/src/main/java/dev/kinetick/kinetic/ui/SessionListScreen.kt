@@ -10,20 +10,28 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
 import dev.kinetick.kinetic.api.SessionInfo
+import dev.kinetick.kinetic.data.SettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SessionListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
+fun SessionListScreen(
+    onOpen: (String) -> Unit,
+    onSettings: () -> Unit,
+    themeMode: ThemeMode,
+    onSetTheme: (ThemeMode) -> Unit,
+) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
-    val baseUrl by app.settings.baseUrl.collectAsState(initial = "")
+    val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
+    val configured = baseUrl.isNotBlank()
     val client = remember(baseUrl) { KcodeClient(baseUrl) }
     val scope = rememberCoroutineScope()
 
@@ -50,26 +58,51 @@ fun SessionListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
         }
     }
 
-    LaunchedEffect(baseUrl, showArchived) { load() }
+    LaunchedEffect(baseUrl, showArchived) { if (configured) load() }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Kinetic") },
                 actions = {
-                    TextButton(onClick = { showArchived = !showArchived }) {
-                        Text(if (showArchived) "Hide archived" else "Archived")
+                    ThemeToggleButton(themeMode) { onSetTheme(themeMode.next()) }
+                    if (configured) {
+                        TextButton(onClick = { showArchived = !showArchived }) {
+                            Text(if (showArchived) "Hide archived" else "Archived")
+                        }
+                        TextButton(onClick = { load() }) { Text("Refresh") }
                     }
-                    TextButton(onClick = { load() }) { Text("Refresh") }
                     TextButton(onClick = onSettings) { Text("Server") }
                 }
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { creating = true }) { Text("+") }
+            if (configured) {
+                FloatingActionButton(onClick = { creating = true }) { Text("+") }
+            }
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            if (!configured) {
+                Column(
+                    Modifier.fillMaxSize().padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("No kcode server yet", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "On the machine running your sessions:\n" +
+                            "kcode --server --host 0.0.0.0 --port 8788\n\n" +
+                            "Then point this app at that machine's LAN address.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(onClick = onSettings) { Text("Set server URL") }
+                }
+            }
             error?.let {
                 Text(
                     "Can't reach $baseUrl — $it",

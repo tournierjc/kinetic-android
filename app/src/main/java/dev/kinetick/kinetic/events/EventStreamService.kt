@@ -53,6 +53,12 @@ class EventStreamService : Service() {
         scope.launch {
             val app = application as KineticApp
             val base = app.settings.baseUrl.first()
+            if (base.isBlank()) {
+                // Nothing to subscribe to until the user configures a server;
+                // building a client here would only throw on the empty URL.
+                updateNotification("No kcode server configured")
+                return@launch
+            }
             val client = KcodeClient(base)
             source?.cancel()
             source = client.eventStream(object : EventSourceListener() {

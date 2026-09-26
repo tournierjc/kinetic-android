@@ -31,7 +31,30 @@ class KcodeClient(val baseUrl: String) {
 
     class KcodeException(val code: Int, message: String) : Exception(message)
 
-    private fun url(path: String) = baseUrl.trimEnd('/') + path
+    /** True once the user has entered a usable server URL. */
+    val configured: Boolean
+        get() = baseUrl.trim().let { it.startsWith("http://") || it.startsWith("https://") }
+
+    private fun url(path: String): String {
+        val base = baseUrl.trim()
+        // Answer with something actionable rather than OkHttp's
+        // "Expected url scheme 'http' or 'https'" leaking into the UI.
+        if (base.isEmpty()) throw KcodeException(0, "No kcode server configured")
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            throw KcodeException(0, "Server URL must start with http:// or https://")
+        }
+        return base.trimEnd('/') + path
+    }
+
+    private fun builder(path: String): Request.Builder {
+        val resolved = url(path)
+        val request = try {
+            Request.Builder().url(resolved)
+        } catch (e: IllegalArgumentException) {
+            throw KcodeException(0, "Invalid server URL: ${e.message}")
+        }
+        return request
+    }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
@@ -47,20 +70,20 @@ class KcodeClient(val baseUrl: String) {
         }
     }
 
-    fun get(path: String): String = exec(Request.Builder().url(url(path)).build())
+    fun get(path: String): String = exec(builder(path).build())
 
     fun post(path: String, body: JsonObject = JsonObject()): String = exec(
-        Request.Builder().url(url(path)).post(body.toString().toRequestBody(JSON)).build()
+        builder(path).post(body.toString().toRequestBody(JSON)).build()
     )
 
     fun patch(path: String, body: JsonObject): String = exec(
-        Request.Builder().url(url(path)).patch(body.toString().toRequestBody(JSON)).build()
+        builder(path).patch(body.toString().toRequestBody(JSON)).build()
     )
 
-    fun delete(path: String): String = exec(Request.Builder().url(url(path)).delete().build())
+    fun delete(path: String): String = exec(builder(path).delete().build())
 
     private fun sse(path: String, body: JsonObject?, listener: EventSourceListener): EventSource {
-        val b = Request.Builder().url(url(path)).header("Accept", "text/event-stream")
+        val b = builder(path).header("Accept", "text/event-stream")
         if (body != null) b.post(body.toString().toRequestBody(JSON)) else b.get()
         return EventSources.createFactory(http).newEventSource(b.build(), listener)
     }

@@ -2,6 +2,8 @@
 package dev.kinetick.kinetic.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -16,7 +18,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(onDone: () -> Unit) {
+fun SettingsScreen(
+    themeMode: ThemeMode,
+    onSetTheme: (ThemeMode) -> Unit,
+    onDone: () -> Unit,
+) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
     val scope = rememberCoroutineScope()
@@ -47,11 +53,39 @@ fun SettingsScreen(onDone: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        TopAppBar(
-            title = { Text("kcode server") },
-            navigationIcon = { TextButton(onClick = onDone) { Text("Back") } }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = { TextButton(onClick = onDone) { Text("Back") } }
+            )
+        }
+    ) { padding ->
+    Column(
+        Modifier
+            .padding(padding)
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.entries.forEach { m ->
+                FilterChip(
+                    selected = m == themeMode,
+                    onClick = { onSetTheme(m) },
+                    label = { Text("${m.glyph} ${m.label}") },
+                )
+            }
+        }
+        Text(
+            "Auto follows the phone; the others pin light or dark.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(20.dp))
+        Text("kcode server", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
             value = url,
             onValueChange = { url = it; status = null },
@@ -69,10 +103,12 @@ fun SettingsScreen(onDone: () -> Unit) {
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            "Start the server on your machine with: kcode --server --port 8788\n" +
+            "Start the server on your machine with:\n" +
+                "kcode --server --host 0.0.0.0 --port 8788\n\n" +
                 "The phone must reach that machine on the same network.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
     }
 }

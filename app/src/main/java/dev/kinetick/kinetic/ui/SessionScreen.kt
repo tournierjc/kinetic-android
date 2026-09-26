@@ -20,6 +20,7 @@ import dev.kinetick.kinetic.api.KcodeClient
 import dev.kinetick.kinetic.api.PermissionRequest
 import dev.kinetick.kinetic.api.SessionInfo
 import dev.kinetick.kinetic.api.Wire
+import dev.kinetick.kinetic.data.SettingsStore
 import dev.kinetick.kinetic.events.EventBus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -32,10 +33,18 @@ import okhttp3.sse.EventSourceListener
 private val TABS = listOf("Chat", "Agents", "Queue", "Info")
 
 @Composable
-fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String) -> Unit) {
+fun SessionScreen(
+    sessionId: String,
+    onBack: () -> Unit,
+    onOpenSession: (String) -> Unit,
+    onSettings: () -> Unit,
+    themeMode: ThemeMode,
+    onSetTheme: (ThemeMode) -> Unit,
+) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
-    val baseUrl by app.settings.baseUrl.collectAsState(initial = "")
+    val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
+    val configured = baseUrl.isNotBlank()
     val client = remember(baseUrl) { KcodeClient(baseUrl) }
     val store = remember(sessionId, baseUrl) { ChatStore() }
     val state by store.state.collectAsState()
@@ -71,6 +80,7 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
     }
 
     LaunchedEffect(sessionId, baseUrl) {
+        if (!configured) return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
             .onSuccess { session = it }
             .onFailure { error = it.message }
@@ -150,14 +160,15 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    // safeDrawing keeps the composer above the navigation bar and the keyboard,
+    // and the title bar below the status bar, on edge-to-edge Android 15.
+    Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
         TopAppBar(
             title = {
                 Column {
                     Text(session?.title ?: sessionId, maxLines = 1)
                     Text(
                         listOfNotNull(
-                            session?.agentName,
                             session?.workspaceDir?.substringAfterLast('/'),
                             state.status.takeIf { it != "idle" },
                         ).joinToString(" · "),
@@ -167,6 +178,7 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
             },
             navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
             actions = {
+                ThemeToggleButton(themeMode) { onSetTheme(themeMode.next()) }
                 if (state.running) {
                     TextButton(onClick = {
                         scope.launch {
@@ -187,6 +199,16 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
         TabRow(selectedTabIndex = tab) {
             TABS.forEachIndexed { i, label ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
+            }
+        }
+
+        if (!configured) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("No kcode server configured.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = onSettings) { Text("Set it up") }
             }
         }
 
@@ -224,6 +246,7 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
                         }
                     },
                     onForked = onOpenSession,
+                    onSessionDeleted = onBack,
                 )
             }
         }

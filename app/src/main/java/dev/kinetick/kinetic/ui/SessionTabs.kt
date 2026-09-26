@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.api.BackgroundTask
 import dev.kinetick.kinetic.api.ContextSnapshot
@@ -192,6 +193,7 @@ fun InfoTab(
     session: SessionInfo?,
     onSessionChanged: () -> Unit,
     onForked: (String) -> Unit,
+    onSessionDeleted: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var usage by remember { mutableStateOf<SessionUsage?>(null) }
@@ -202,6 +204,10 @@ fun InfoTab(
     var message by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf(false) }
     var titleDraft by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var confirmingDelete by remember { mutableStateOf(false) }
+    // null = follow the selected model's provider; a set = the user's choice.
+    var expandedProviders by remember(sessionId) { mutableStateOf<Set<String>?>(null) }
 
     suspend fun load() {
         runCatching { withContext(Dispatchers.IO) { client.usage(sessionId) } }.onSuccess { usage = it }
@@ -216,6 +222,15 @@ fun InfoTab(
     LaunchedEffect(sessionId) { load() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                session?.title ?: "Session",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { scope.launch { load() } }) { Text("Refresh") }
+        }
         message?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
@@ -251,44 +266,84 @@ fun InfoTab(
             }
         } ?: Text("—", style = MaterialTheme.typography.bodySmall)
 
-        // ---- model ----
+        // ---- model ---- grouped per provider, expandable
         Spacer(Modifier.height(12.dp))
         Text("Model", style = MaterialTheme.typography.titleMedium)
         if (models.isEmpty()) {
             Text("No model roster for this session.", style = MaterialTheme.typography.bodySmall)
         }
-        models.take(30).forEach { m ->
-            Row(
-                Modifier
+        val expanded = expandedProviders ?: setOfNotNull(models.firstOrNull { it.selected == true }?.providerId)
+        models.groupBy { it.providerId }.forEach { (providerId, entries) ->
+            val isOpen = providerId in expanded
+            val current = entries.firstOrNull { it.selected == true }
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = m.selected != true) {
-                        scope.launch {
-                            runCatching {
-                                withContext(Dispatchers.IO) {
-                                    client.selectModel(sessionId, m.providerId, m.modelId, m.variant)
+                    .padding(vertical = 3.dp)
+                    .clickable {
+                        expandedProviders = if (isOpen) expanded - providerId else expanded + providerId
+                    },
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(if (isOpen) "▾" else "▸", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            entries.firstNotNullOfOrNull { it.providerName } ?: providerId,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            current?.let { it.displayName ?: it.modelId }
+                                ?: "${entries.size} model${if (entries.size == 1) "" else "s"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (isOpen) {
+                entries.forEach { m ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = m.selected != true && !busy) {
+                                busy = true
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            client.selectModel(sessionId, m.providerId, m.modelId, m.variant)
+                                        }
+                                    }.onSuccess { message = "Model set to ${m.displayName ?: m.modelId}" }
+                                        .onFailure { message = "Failed: ${it.message}" }
+                                    busy = false
+                                    load()
+                                    onSessionChanged()
                                 }
-                            }.onSuccess { message = "Model set to ${m.displayName ?: m.modelId}" }
-                                .onFailure { message = "Failed: ${it.message}" }
-                            load()
-                            onSessionChanged()
+                            }
+                            .padding(start = 20.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = m.selected == true, onClick = null)
+                        Spacer(Modifier.width(4.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(m.displayName ?: m.modelId, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                listOfNotNull(
+                                    m.modelId,
+                                    m.contextLimit?.let { "ctx $it" },
+                                    m.variant,
+                                    m.enabled?.takeIf { !it }?.let { "disabled" },
+                                ).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
-                    .padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                RadioButton(selected = m.selected == true, onClick = null)
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(m.displayName ?: m.modelId, style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        listOfNotNull(
-                            "${m.providerId}/${m.modelId}",
-                            m.contextLimit?.let { "ctx $it" },
-                            m.variant,
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
@@ -302,85 +357,197 @@ fun InfoTab(
                     value = titleDraft,
                     onValueChange = { titleDraft = it },
                     singleLine = true,
-                    modifier = Modifier.weight(1f)
+                    label = { Text("Title") },
+                    modifier = Modifier.weight(1f),
                 )
-                TextButton(onClick = {
-                    scope.launch {
-                        runCatching { withContext(Dispatchers.IO) { client.renameSession(sessionId, titleDraft) } }
-                            .onSuccess { message = "Renamed" }
-                            .onFailure { message = "Failed: ${it.message}" }
-                        renaming = false
-                        onSessionChanged()
-                        load()
-                    }
-                }) { Text("Save") }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    enabled = !busy && titleDraft.isNotBlank(),
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            runCatching { withContext(Dispatchers.IO) { client.renameSession(sessionId, titleDraft) } }
+                                .onSuccess { message = "Renamed" }
+                                .onFailure { message = "Failed: ${it.message}" }
+                            busy = false
+                            renaming = false
+                            onSessionChanged()
+                            load()
+                        }
+                    },
+                ) { Text("Save") }
+                TextButton(onClick = { renaming = false }) { Text("Cancel") }
             }
         } else {
-            Row {
-                TextButton(onClick = {
-                    titleDraft = session?.title ?: ""
-                    renaming = true
-                }) { Text("Rename") }
-                TextButton(onClick = {
-                    scope.launch {
-                        val pinned = session?.pinned != true
-                        runCatching { withContext(Dispatchers.IO) { client.setPinned(sessionId, pinned) } }
-                            .onSuccess { message = if (pinned) "Pinned" else "Unpinned" }
-                            .onFailure { message = "Failed: ${it.message}" }
-                        onSessionChanged()
-                    }
-                }) { Text(if (session?.pinned == true) "Unpin" else "Pin") }
-                TextButton(onClick = {
-                    scope.launch {
-                        val archived = session?.archived != true
-                        runCatching { withContext(Dispatchers.IO) { client.setArchived(sessionId, archived) } }
-                            .onSuccess { message = if (archived) "Archived" else "Unarchived" }
-                            .onFailure { message = "Failed: ${it.message}" }
-                        onSessionChanged()
-                    }
-                }) { Text(if (session?.archived == true) "Unarchive" else "Archive") }
-            }
-            Row {
-                TextButton(
-                    enabled = forkOptions?.canFork == true,
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = !busy,
                     onClick = {
+                        titleDraft = session?.title ?: ""
+                        renaming = true
+                    },
+                ) { Text("Rename") }
+                OutlinedButton(
+                    enabled = !busy,
+                    onClick = {
+                        busy = true
                         scope.launch {
-                            val res = runCatching {
+                            val pinned = session?.pinned != true
+                            runCatching { withContext(Dispatchers.IO) { client.setPinned(sessionId, pinned) } }
+                                .onSuccess { message = if (pinned) "Pinned" else "Unpinned" }
+                                .onFailure { message = "Failed: ${it.message}" }
+                            busy = false
+                            onSessionChanged()
+                        }
+                    },
+                ) { Text(if (session?.pinned == true) "Unpin" else "Pin") }
+                OutlinedButton(
+                    enabled = !busy,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            val archived = session?.archived != true
+                            runCatching { withContext(Dispatchers.IO) { client.setArchived(sessionId, archived) } }
+                                .onSuccess { message = if (archived) "Archived" else "Unarchived" }
+                                .onFailure { message = "Failed: ${it.message}" }
+                            busy = false
+                            onSessionChanged()
+                        }
+                    },
+                ) { Text(if (session?.archived == true) "Unarchive" else "Archive") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = forkOptions?.canFork == true && !busy,
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            runCatching {
                                 withContext(Dispatchers.IO) { client.fork(sessionId, forkOptions?.suggestedTitle) }
-                            }
-                            res.onSuccess { body ->
+                            }.onSuccess { body ->
                                 val newId = dev.kinetick.kinetic.api.Wire.obj(body)
                                     ?.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
                                 if (newId != null) onForked(newId) else message = "Forked"
                             }.onFailure { message = "Fork failed: ${it.message}" }
+                            busy = false
                         }
-                    }
+                    },
                 ) { Text("Fork") }
-                TextButton(onClick = { scope.launch { load() } }) { Text("Refresh info") }
+                OutlinedButton(
+                    enabled = !busy,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    onClick = { confirmingDelete = true },
+                ) { Text("Delete") }
             }
             forkOptions?.takeIf { !it.canFork }?.unavailableReason?.let {
                 Text(
                     "Fork unavailable: $it",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
 
         // ---- skills ----
-        Spacer(Modifier.height(12.dp))
-        Text("Skills (${skills.size})", style = MaterialTheme.typography.titleMedium)
-        skills.take(40).forEach { s ->
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Skills", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(
+                "${skills.size}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            "Tap a skill to read its description in full.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        if (skills.isEmpty()) {
+            Text("No skills reported for this workspace.", style = MaterialTheme.typography.bodySmall)
+        }
+        skills.take(60).forEach { s ->
             var open by remember(s.name) { mutableStateOf(false) }
-            Column(Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 4.dp)) {
-                Text(s.name, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
-                Text(
-                    if (open) s.summary else s.summary.take(90) + if (s.summary.length > 90) "…" else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clickable { open = !open },
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            s.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        s.source?.takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        s.summary.ifBlank { "No description provided." },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (open) Int.MAX_VALUE else 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (open) {
+                        s.description?.takeIf { it.isNotBlank() && it != s.summary }?.let {
+                            Spacer(Modifier.height(6.dp))
+                            HorizontalDivider()
+                            Spacer(Modifier.height(6.dp))
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if (confirmingDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmingDelete = false },
+            title = { Text("Delete this session?") },
+            text = {
+                Text(
+                    "\"${session?.title ?: sessionId}\" and its transcript are removed from " +
+                        "the server. This cannot be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingDelete = false
+                    busy = true
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { client.deleteSession(sessionId) } }
+                            .onSuccess { onSessionDeleted() }
+                            .onFailure { message = "Failed: ${it.message}" }
+                        busy = false
+                    }
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 

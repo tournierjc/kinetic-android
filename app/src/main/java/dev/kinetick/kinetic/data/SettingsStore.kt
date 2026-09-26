@@ -13,13 +13,27 @@ class SettingsStore(private val context: Context) {
 
     companion object {
         private val KEY_BASE_URL = stringPreferencesKey("server_base_url")
-        const val DEFAULT_BASE_URL = "http://192.168.1.1:8788"
+        private val KEY_THEME = stringPreferencesKey("theme_mode")
+
+        /**
+         * Empty until the user configures a server. A placeholder IP used to sit
+         * here, which only produced a confusing timeout on first run.
+         */
+        const val NO_SERVER = ""
     }
 
     val baseUrl: Flow<String> = context.dataStore.data
-        .map { it[KEY_BASE_URL] ?: DEFAULT_BASE_URL }
+        .map { it[KEY_BASE_URL] ?: NO_SERVER }
+
+    /** One of "system", "dark", "light" — see ThemeMode. */
+    val themeMode: Flow<String> = context.dataStore.data
+        .map { it[KEY_THEME] ?: "system" }
 
     suspend fun setBaseUrl(url: String) {
-        context.dataStore.edit { it[KEY_BASE_URL] = url.trimEnd('/') }
+        context.dataStore.edit { it[KEY_BASE_URL] = url.trim().trimEnd('/') }
+    }
+
+    suspend fun setThemeMode(id: String) {
+        context.dataStore.edit { it[KEY_THEME] = id }
     }
 }
