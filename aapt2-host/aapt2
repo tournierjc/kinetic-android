@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/data/aapt2-arm/qemu/qroot/usr/bin/qemu-x86_64 -L /opt/data/aapt2-arm/amd64root /opt/data/android-sdk/build-tools/35.0.0/aapt2 "$@"
