@@ -7,6 +7,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,6 +16,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.ChatMessage
@@ -168,39 +172,77 @@ fun SessionScreen(
         TopAppBar(
             title = {
                 Column {
-                    Text(session?.title ?: sessionId, maxLines = 1)
-                    Text(
-                        listOfNotNull(
-                            session?.workspaceDir?.substringAfterLast('/'),
-                            state.status.takeIf { it != "idle" },
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(session?.title ?: sessionId, maxLines = 1)
+                        if (state.running) {
+                            Spacer(Modifier.width(8.dp))
+                            LinearProgressIndicator(
+                                Modifier.width(42.dp).height(3.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            session?.workspaceDir?.substringAfterLast('/') ?: "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (state.status != "idle") {
+                            Spacer(Modifier.width(6.dp))
+                            StatusPill(state.status)
+                        }
+                    }
                 }
             },
-            navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+            navigationIcon = {
+                IconButton(onClick = onBack) { Text("←", style = MaterialTheme.typography.titleLarge) }
+            },
             actions = {
                 ThemeToggleButton(themeMode) { onSetTheme(themeMode.next()) }
                 if (state.running) {
-                    TextButton(onClick = {
-                        scope.launch {
-                            runCatching { withContext(Dispatchers.IO) { client.abort(sessionId) } }
-                                .onFailure { error = it.message }
-                        }
-                    }) { Text("Abort") }
+                    FilledTonalButton(
+                        onClick = {
+                            scope.launch {
+                                runCatching { withContext(Dispatchers.IO) { client.abort(sessionId) } }
+                                    .onFailure { error = it.message }
+                            }
+                        },
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    ) { Text("■ Stop", style = MaterialTheme.typography.labelMedium) }
                 }
-                TextButton(onClick = {
+                IconButton(onClick = {
                     scope.launch {
                         reloadHistory()
                         reloadInteractions()
                     }
-                }) { Text("Sync") }
+                }) { Text("⟳", style = MaterialTheme.typography.titleMedium) }
             }
         )
 
-        TabRow(selectedTabIndex = tab) {
+        PrimaryTabRow(
+            selectedTabIndex = tab,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.primary,
+        ) {
             TABS.forEachIndexed { i, label ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
+                Tab(
+                    selected = tab == i,
+                    onClick = { tab = i },
+                    text = {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (tab == i) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                    },
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
             }
         }
 
@@ -215,21 +257,31 @@ fun SessionScreen(
         }
 
         (error ?: state.error)?.let {
-            Text(
-                it,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "⚠ $it",
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
 
         notice?.let {
-            Text(
-                it,
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "✓ $it",
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
 
         Box(Modifier.weight(1f)) {
@@ -319,16 +371,22 @@ fun SessionScreen(
 private fun ChatTab(state: TurnState, listState: LazyListState, onResync: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         if (state.needsResync) {
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             ) {
-                Text(
-                    "The transcript drifted from the server.",
-                    Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                TextButton(onClick = onResync) { Text("Reload") }
+                Row(
+                    Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "The transcript drifted from the server.",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    TextButton(onClick = onResync) { Text("Reload") }
+                }
             }
         }
         state.statusMessage?.takeIf { state.status == "error" }?.let {
@@ -336,10 +394,15 @@ private fun ChatTab(state: TurnState, listState: LazyListState, onResync: () -> 
                 it,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 12.dp)
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             items(state.messages, key = { it.id ?: "m${it.hashCode()}" }) { message ->
                 MessageRow(message)
             }
@@ -369,7 +432,7 @@ private fun MessageRow(message: ChatMessage) {
             ) {
                 SelectionContainer {
                     Text(
-                        message.content,
+                        message.content.trim(),
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         fontFamily = Fonts.Ui,
@@ -400,29 +463,52 @@ private fun Composer(
     onSend: () -> Unit,
     onQueue: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(8.dp)) {
-        if (running) {
-            Text(
-                "A turn is running — Send steers it, Queue defers it.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Row(verticalAlignment = Alignment.Bottom) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text(if (running) "Steer the agent…" else "Message…") },
-                maxLines = 5,
-            )
-            Spacer(Modifier.width(8.dp))
-            Column {
-                FilledTonalButton(enabled = value.isNotBlank(), onClick = onSend) {
-                    Text(if (running) "Steer" else "Send")
-                }
-                if (running) {
-                    TextButton(enabled = value.isNotBlank(), onClick = onQueue) { Text("Queue") }
+    val canSend = value.isNotBlank()
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 3.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            if (running) {
+                Text(
+                    "🔄 A turn is running — Send steers it, Queue defers it.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+            Row(verticalAlignment = Alignment.Bottom) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(if (running) "Steer the agent…" else "Message…") },
+                    maxLines = 5,
+                    shape = RoundedCornerShape(22.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    FilledIconButton(
+                        enabled = canSend,
+                        onClick = onSend,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    ) {
+                        Text(if (running) "🧭" else "➤", style = MaterialTheme.typography.titleMedium)
+                    }
+                    if (running) {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            enabled = canSend,
+                            onClick = onQueue,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        ) { Text("Queue", style = MaterialTheme.typography.labelSmall) }
+                    }
                 }
             }
         }

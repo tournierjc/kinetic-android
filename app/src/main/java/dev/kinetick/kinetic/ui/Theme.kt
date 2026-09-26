@@ -1,18 +1,26 @@
 package dev.kinetick.kinetic.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.R
 
 /**
@@ -150,7 +158,21 @@ fun KineticTheme(mode: ThemeMode, content: @Composable () -> Unit) {
 /** One button that cycles Auto → Dark → Light, showing where it currently sits. */
 @Composable
 fun ThemeToggleButton(mode: ThemeMode, onCycle: () -> Unit) {
-    TextButton(onClick = onCycle) {
-        Text("${mode.glyph} ${mode.label}")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        // Segmented control: the three modes as a row, current one filled.
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(Modifier.clickable(onClick = onCycle).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                Text(
+                    "${mode.glyph} ${mode.label}",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }

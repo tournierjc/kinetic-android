@@ -277,6 +277,7 @@ object Wire {
         createdAt = o.l("createdAt"),
         updatedAt = o.l("updatedAt"),
         model = o.o("model")?.let { SessionModel(it.s("providerId"), it.s("modelId"), it.s("variant")) },
+        errorMessage = o.s("errorMessage"),
     )
 
     fun models(text: String): List<ModelEntry> =

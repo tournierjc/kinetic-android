@@ -184,6 +184,7 @@ data class SessionInfo(
     val createdAt: Long? = null,
     val updatedAt: Long? = null,
     val model: SessionModel? = null,
+    val errorMessage: String? = null,
 )
 
 data class SessionModel(val providerId: String? = null, val modelId: String? = null, val variant: String? = null)
