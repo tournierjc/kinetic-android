@@ -6,7 +6,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.kinetick.kinetic.api.PermissionRequest
@@ -31,7 +30,7 @@ fun PermissionDialog(
                 Text(
                     request.toolName ?: "tool",
                     style = MaterialTheme.typography.labelMedium,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = Fonts.Code,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -58,7 +57,7 @@ fun PermissionDialog(
                         Text(
                             it.take(4000),
                             fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = Fonts.Code,
                             modifier = Modifier.padding(8.dp)
                         )
                     }

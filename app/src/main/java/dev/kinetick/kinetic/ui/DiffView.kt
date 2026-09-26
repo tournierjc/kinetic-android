@@ -12,7 +12,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,7 +49,7 @@ fun DiffText(diff: String, maxLines: Int = 300) {
     Text(
         text = text,
         fontSize = 11.sp,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = Fonts.Code,
         lineHeight = 15.sp,
         modifier = Modifier.fillMaxWidth()
     )
@@ -140,7 +139,7 @@ private fun PreviewCard(title: String, meta: String, content: @Composable () -> 
             Text(
                 title,
                 style = MaterialTheme.typography.labelMedium,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = Fonts.Code,
                 modifier = Modifier.weight(1f, fill = false)
             )
             if (meta.isNotEmpty()) {

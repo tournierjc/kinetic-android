@@ -1,13 +1,15 @@
 package dev.kinetick.kinetic.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -16,53 +18,109 @@ import dev.kinetick.kinetic.api.ChatMessage
 import dev.kinetick.kinetic.api.MessagePart
 import dev.kinetick.kinetic.api.ToolCall
 
-/** Collapsible tool-call card: name, status, input/output, structured preview. */
+/** Which glyph marks a tool, so a transcript is scannable without reading names. */
+private fun toolEmoji(name: String): String {
+    val n = name.lowercase()
+    return when {
+        listOf("shell", "bash", "exec", "command", "terminal", "run_").any { n.contains(it) } -> "🖥️"
+        listOf("write", "edit", "patch", "replace", "create", "apply").any { n.contains(it) } -> "✍️"
+        listOf("read", "view", "cat_", "open_file").any { n.contains(it) } -> "📖"
+        listOf("glob", "grep", "search", "find").any { n.contains(it) } -> "🔍"
+        listOf("web", "fetch", "http", "browse", "url").any { n.contains(it) } -> "🌐"
+        listOf("todo", "plan", "task").any { n.contains(it) } -> "🗒️"
+        listOf("agent", "delegate").any { n.contains(it) } -> "🤖"
+        n.contains("skill") -> "🧩"
+        n.contains("memory") -> "🧠"
+        listOf("image", "screenshot", "vision").any { n.contains(it) } -> "🖼️"
+        listOf("git", "diff").any { n.contains(it) } -> "🌿"
+        n.contains("mcp") -> "🔌"
+        listOf("python", "notebook", "repl").any { n.contains(it) } -> "🐍"
+        else -> "🔧"
+    }
+}
+
+private fun statusEmoji(status: String): String = when (status) {
+    "running", "started", "in_progress", "pending" -> "🔄"
+    "error", "failed" -> "❌"
+    "stopped", "cancelled", "aborted" -> "⏹️"
+    "completed", "done", "success", "succeeded" -> "✅"
+    else -> "•"
+}
+
+private fun formatDuration(ms: Long): String =
+    if (ms < 1000) "${ms} ms" else "%.1f s".format(ms / 1000.0)
+
+/** Collapsible tool-call card: glyph, name, status, input/output, preview. */
 @Composable
 fun ToolCard(call: ToolCall) {
     var expanded by remember { mutableStateOf(call.preview != null) }
-    val statusColor = when (call.status?.lowercase()) {
-        "error", "failed" -> MaterialTheme.colorScheme.error
-        "running", "started", "in_progress" -> MaterialTheme.colorScheme.primary
+    val status = call.status?.lowercase() ?: "unknown"
+    val failed = status in setOf("error", "failed")
+    val running = status in setOf("running", "started", "in_progress", "pending")
+    val accent = when {
+        failed -> MaterialTheme.colorScheme.error
+        running -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val container = when {
+        failed -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+        running -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = container),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.25f)),
     ) {
         Column(Modifier.padding(10.dp)) {
             Row(
                 Modifier.fillMaxWidth().clickable { expanded = !expanded },
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Text(toolEmoji(call.name), style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        call.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontFamily = Fonts.Code,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    call.durationMs?.let {
+                        Text(
+                            formatDuration(it),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = accent.copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        "${statusEmoji(status)} $status",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = accent,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
                 Text(
                     if (expanded) "▾" else "▸",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    call.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.weight(1f)
-                )
-                call.status?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = statusColor)
-                }
-                call.durationMs?.let {
-                    Spacer(Modifier.width(6.dp))
-                    Text("${it}ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
             }
             // A one-line hint stays visible while collapsed.
             if (!expanded) {
                 call.preview?.blocks?.firstOrNull()?.let { b ->
                     val hint = when (b) {
-                        is dev.kinetick.kinetic.api.PreviewBlock.Diff -> "${b.path ?: "diff"}  +${b.addedLines} −${b.removedLines}"
-                        is dev.kinetick.kinetic.api.PreviewBlock.File -> "${b.path ?: "file"}  ${b.lineCount} lines"
+                        is dev.kinetick.kinetic.api.PreviewBlock.Diff -> "📝 ${b.path ?: "diff"}  +${b.addedLines} −${b.removedLines}"
+                        is dev.kinetick.kinetic.api.PreviewBlock.File -> "📄 ${b.path ?: "file"}  ${b.lineCount} lines"
                         is dev.kinetick.kinetic.api.PreviewBlock.Summary -> b.message
                     }
                     Text(
@@ -70,7 +128,8 @@ fun ToolCard(call: ToolCall) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
@@ -96,15 +155,15 @@ private fun JsonBlock(label: String, el: JsonElement, error: Boolean = false) {
             .clickable { expanded = !expanded }
     ) {
         Text(
-            "$label ${if (expanded) "▾" else "▸"}",
+            (if (error) "❌" else "▪") + " $label ${if (expanded) "▾" else "▸"}",
             style = MaterialTheme.typography.labelSmall,
-            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
             if (expanded) raw else raw.take(160).replace('\n', ' ') + " …",
             fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+            fontFamily = Fonts.Code,
+            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
         )
     }
 }
@@ -117,6 +176,34 @@ private fun prettyJson(el: JsonElement): String = when {
     }.getOrDefault(el.toString())
 }
 
+/** Assistant prose in a bubble; thinking and tools live outside it, in order. */
+@Composable
+fun AssistantBubble(content: String, streaming: Boolean) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.widthIn(max = 360.dp).padding(vertical = 2.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            SelectionContainer {
+                Text(
+                    content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = Fonts.Ui,
+                )
+            }
+            if (streaming) {
+                Text(
+                    "▍",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
 /** An assistant message: thinking + text + tool calls, in the order received. */
 @Composable
 fun AssistantParts(message: ChatMessage) {
@@ -124,20 +211,31 @@ fun AssistantParts(message: ChatMessage) {
     if (parts.isEmpty()) {
         if (!message.thinking.isNullOrBlank()) ThinkingBlock(message.thinking, message.thinkingDurationMs)
         message.toolCalls.forEach { ToolCard(it) }
-        if (message.content.isNotBlank()) Text(message.content, style = MaterialTheme.typography.bodyMedium)
+        if (message.content.isNotBlank()) AssistantBubble(message.content, message.streaming)
     } else {
         parts.forEach { part ->
             when (part) {
                 is MessagePart.Thinking -> ThinkingBlock(part.content, part.durationMs)
                 is MessagePart.Text -> if (part.content.isNotBlank()) {
-                    Text(part.content, style = MaterialTheme.typography.bodyMedium)
+                    AssistantBubble(part.content, message.streaming)
                 }
                 is MessagePart.Tool -> ToolCard(part.toolCall)
             }
         }
     }
     message.error?.let {
-        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        ) {
+            Text(
+                "❌ $it",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(10.dp),
+            )
+        }
     }
     message.usage?.let { u ->
         val bits = listOfNotNull(
@@ -148,9 +246,10 @@ fun AssistantParts(message: ChatMessage) {
         )
         if (bits.isNotEmpty()) {
             Text(
-                bits.joinToString(" · "),
+                "🔢 " + bits.joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
@@ -167,23 +266,26 @@ private fun ThinkingBlock(content: String, durationMs: Long?) {
     ) {
         Text(
             buildString {
-                append(if (expanded) "▾ thinking" else "▸ thinking")
-                durationMs?.let { append(" (${it}ms)") }
+                append(if (expanded) "💭 thinking ▾" else "💭 thinking ▸")
+                durationMs?.let { append(" · ${formatDuration(it)}") }
             },
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            fontStyle = FontStyle.Italic,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (expanded) {
             Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
             ) {
                 Text(
                     content,
                     style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(8.dp)
+                    modifier = Modifier.padding(10.dp),
                 )
             }
         }

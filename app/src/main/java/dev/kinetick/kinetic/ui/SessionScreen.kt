@@ -6,12 +6,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.ChatMessage
@@ -362,34 +364,38 @@ private fun MessageRow(message: ChatMessage) {
         when {
             isUser -> Surface(
                 color = MaterialTheme.colorScheme.primaryContainer,
-                shape = MaterialTheme.shapes.medium,
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
                 modifier = Modifier.widthIn(max = 340.dp)
             ) {
                 SelectionContainer {
-                    Text(message.content, Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        message.content,
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = Fonts.Ui,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
                 }
             }
 
             isSystem -> Text(
                 message.content.ifBlank { message.kind ?: "system" },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                fontStyle = FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            else -> Column(Modifier.fillMaxWidth()) {
+            else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
                 AssistantParts(message)
-                if (message.streaming) {
-                    Text("…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                }
                 val flags = listOfNotNull(
-                    if (message.actions?.fork == true) "forkable" else null,
-                    if (message.actions?.rewind == true) "rewindable" else null,
+                    if (message.actions?.fork == true) "⑂ forkable" else null,
+                    if (message.actions?.rewind == true) "↺ rewindable" else null,
                 )
                 if (flags.isNotEmpty()) {
                     Text(
                         flags.joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
