@@ -251,6 +251,17 @@ data class QueueSnapshot(
     val pendingCount: Int = 0,
 )
 
+/**
+ * Ack of `POST /queue/enqueue`. The runtime answers `{itemId, status, position}`
+ * and, on an idle session, drains the message straight into the conversation —
+ * so the queue snapshot can stay empty while this ack is the real confirmation.
+ */
+data class QueuedMessage(
+    val itemId: String? = null,
+    val status: String? = null,
+    val position: Int? = null,
+)
+
 // ---- usage / context ----
 
 data class UsageSummary(

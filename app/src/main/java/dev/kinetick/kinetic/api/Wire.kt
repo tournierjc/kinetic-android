@@ -269,8 +269,9 @@ object Wire {
         workspaceDir = o.s("workspaceDir"),
         sessionKind = o.s("sessionKind"),
         visibility = o.s("visibility"),
-        archived = o.b("archived"),
-        pinned = o.b("pinned"),
+        // `archived` is always present; `pinned` is omitted when false.
+        archived = o.b("archived") ?: false,
+        pinned = o.b("pinned") ?: false,
         parentSessionId = o.s("parentSessionId"),
         status = o.s("status"),
         createdAt = o.l("createdAt"),
@@ -345,6 +346,12 @@ object Wire {
             paused = o.b("paused") ?: false,
             pendingCount = o.i("pendingCount") ?: 0,
         )
+    }
+
+    /** Ack of `POST /queue/enqueue`: `{itemId, status, position}`. */
+    fun queuedMessage(text: String): QueuedMessage {
+        val o = obj(text) ?: return QueuedMessage()
+        return QueuedMessage(itemId = o.s("itemId"), status = o.s("status"), position = o.i("position"))
     }
 
     // ---- usage / context / fork ----

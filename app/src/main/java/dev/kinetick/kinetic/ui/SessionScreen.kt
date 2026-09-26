@@ -47,8 +47,17 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
     var input by remember { mutableStateOf("") }
     var interact by remember { mutableStateOf<Interactions?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf<EventSource?>(null) }
     val listState = rememberLazyListState()
+
+    // Notices (queue acks) clear themselves.
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(4000)
+            notice = null
+        }
+    }
 
     suspend fun reloadHistory() {
         runCatching { withContext(Dispatchers.IO) { client.messages(sessionId, limit = 100) } }
@@ -131,6 +140,12 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
         input = ""
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { client.queueEnqueue(sessionId, text) } }
+                .onSuccess {
+                    // The ack is authoritative: an idle session drains the queue
+                    // into the conversation, so the snapshot can stay empty.
+                    notice = it.position?.let { p -> "Queued (position $p)" } ?: "Queued"
+                    reloadHistory()
+                }
                 .onFailure { error = it.message }
         }
     }
@@ -179,6 +194,15 @@ fun SessionScreen(sessionId: String, onBack: () -> Unit, onOpenSession: (String)
             Text(
                 it,
                 color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
+        notice?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )

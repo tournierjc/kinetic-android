@@ -43,6 +43,16 @@ JAVA_HOME=<jdk17> ANDROID_HOME=<sdk> ./gradlew assembleDebug   # APK
 JAVA_HOME=<jdk17> ANDROID_HOME=<sdk> ./gradlew testDebugUnitTest
 ```
 
+`WireTest` decodes captured server payloads and always runs. `KcodeClientLiveTest`
+drives a real server end to end and is skipped unless you point it at one:
+
+```
+KCODE_BASE_URL=http://127.0.0.1:8788 ./gradlew testDebugUnitTest
+```
+
+CI (`.github/workflows/android.yml`) builds the APK and runs the offline tests on
+every push.
+
 minSdk 26, targetSdk 35. Requires the server write API (kinetick-code
 `feat/server-write-api`).
 

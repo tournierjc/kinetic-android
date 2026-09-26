@@ -206,9 +206,13 @@ class KcodeClient(val baseUrl: String) {
 
     fun queue(id: String): QueueSnapshot = Wire.queue(get("/sessions/${enc(id)}/queue"))
 
-    fun queueEnqueue(id: String, content: String) {
-        post("/sessions/${enc(id)}/queue/enqueue", j("content" to content))
-    }
+    /**
+     * Enqueue a follow-up. The ack is authoritative: on an idle session the
+     * runtime drains the message into the conversation immediately, so it may
+     * never show up in a queue snapshot.
+     */
+    fun queueEnqueue(id: String, content: String): QueuedMessage =
+        Wire.queuedMessage(post("/sessions/${enc(id)}/queue/enqueue", j("content" to content)))
 
     fun queueContinue(id: String) { post("/sessions/${enc(id)}/queue/continue") }
 
