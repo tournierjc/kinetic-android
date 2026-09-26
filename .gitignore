@@ -4,7 +4,11 @@
 /.idea
 .DS_Store
 /build
+**/build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+.kotlin/
+# Local aapt2 shim for the aarch64 build sandbox (machine-specific binary).
+aapt2-host/
