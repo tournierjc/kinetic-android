@@ -3,11 +3,15 @@ package dev.kinetick.kinetic.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
@@ -57,58 +61,99 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
-                navigationIcon = { TextButton(onClick = onDone) { Text("Back") } }
+                navigationIcon = {
+                    IconButton(onClick = onDone) { Text("←", style = MaterialTheme.typography.titleLarge) }
+                }
             )
         }
     ) { padding ->
-    Column(
-        Modifier
-            .padding(padding)
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
-    ) {
-        Text("Appearance", style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ThemeMode.entries.forEach { m ->
-                FilterChip(
-                    selected = m == themeMode,
-                    onClick = { onSetTheme(m) },
-                    label = { Text("${m.glyph} ${m.label}") },
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SectionHeader("Appearance")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ThemeMode.entries.forEach { m ->
+                    FilterChip(
+                        selected = m == themeMode,
+                        onClick = { onSetTheme(m) },
+                        label = { Text("${m.glyph} ${m.label}", style = MaterialTheme.typography.labelLarge) },
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Text(
+                "Auto follows the phone; the others pin light or dark.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            SectionHeader("kcode server")
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it; status = null },
+                label = { Text("Base URL") },
+                placeholder = { Text("http://192.168.x.x:8788") },
+                leadingIcon = { Text("🖥", style = MaterialTheme.typography.titleSmall) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Done,
+                ),
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = ::testAndSave,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Text("Test & save", style = MaterialTheme.typography.titleSmall)
+            }
+            status?.let {
+                val ok = it.startsWith("Connected")
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (ok) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.errorContainer,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        (if (ok) "✓ " else "⚠ ") + it,
+                        color = if (ok) MaterialTheme.colorScheme.onSecondaryContainer
+                        else MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+            SectionCard(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
+                    "Start the server on your machine with:",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "kcode --server --host 0.0.0.0 --port 8788",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = Fonts.Code,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "The phone must reach that machine on the same network.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        Text(
-            "Auto follows the phone; the others pin light or dark.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        Spacer(Modifier.height(20.dp))
-        Text("kcode server", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it; status = null },
-            label = { Text("Base URL (http://192.168.x.x:8788)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(12.dp))
-        Button(onClick = ::testAndSave, modifier = Modifier.fillMaxWidth()) {
-            Text("Test & save")
-        }
-        status?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, style = MaterialTheme.typography.bodyMedium)
-        }
-        Spacer(Modifier.height(16.dp))
-        Text(
-            "Start the server on your machine with:\n" +
-                "kcode --server --host 0.0.0.0 --port 8788\n\n" +
-                "The phone must reach that machine on the same network.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
     }
 }
