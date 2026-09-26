@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kinetick.kinetic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildFeatures { compose = true }
@@ -26,7 +26,17 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // The APK that actually goes on a phone: R8 + resource shrinking
+            // keep it well under the size a chat app will accept.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // Debug-signed so it installs straight from a download: this is a
+            // personal build, not a store release.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 }
