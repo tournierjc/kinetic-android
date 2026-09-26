@@ -387,17 +387,6 @@ private fun MessageRow(message: ChatMessage) {
 
             else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
                 AssistantParts(message)
-                val flags = listOfNotNull(
-                    if (message.actions?.fork == true) "⑂ forkable" else null,
-                    if (message.actions?.rewind == true) "↺ rewindable" else null,
-                )
-                if (flags.isNotEmpty()) {
-                    Text(
-                        flags.joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
         }
     }

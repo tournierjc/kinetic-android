@@ -179,6 +179,10 @@ private fun prettyJson(el: JsonElement): String = when {
 /** Assistant prose in a bubble; thinking and tools live outside it, in order. */
 @Composable
 fun AssistantBubble(content: String, streaming: Boolean) {
+    // The runtime prefixes assistant text with blank lines; in a bubble they
+    // read as a hole above the answer.
+    val shown = content.trimStart('\n', '\r', ' ', '\t')
+    if (shown.isEmpty()) return
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
@@ -188,7 +192,7 @@ fun AssistantBubble(content: String, streaming: Boolean) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             SelectionContainer {
                 Text(
-                    content,
+                    shown,
                     style = MaterialTheme.typography.bodyMedium,
                     fontFamily = Fonts.Ui,
                 )
