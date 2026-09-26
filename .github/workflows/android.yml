@@ -17,14 +17,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
 
-      # Compose snapshots and the AGP tree are large; a warm cache keeps this
-      # under a couple of minutes once it has run once.
+      # The runner image already ships an Android SDK. `sdkmanager` from the
+      # preinstalled cmdline-tools is used directly: the android-actions
+      # setup-android action is not needed and currently fails installing the
+      # legacy `tools` package.
+      - name: Show installed SDK packages
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          SDKMANAGER="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -name sdkmanager -type f 2>/dev/null | head -1)"
+          echo "sdkmanager=$SDKMANAGER"
+          ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/platforms" 2>/dev/null || true
+          ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" 2>/dev/null || true
+
       - name: Assemble debug APK and run decoder tests
-        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon
+        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
