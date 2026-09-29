@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
@@ -32,25 +34,31 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
 
     var url by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    var revealToken by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var editing by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        url = app.settings.baseUrl.first()
+        val server = app.settings.server.first()
+        url = server.baseUrl
+        token = server.token
     }
 
     fun testAndSave() {
         scope.launch {
             status = "Testing…"
             val result = withContext(Dispatchers.IO) {
-                runCatching { dev.kinetick.kinetic.api.Wire.obj(KcodeClient(url).health()) }
+                runCatching { Wire.obj(KcodeClient(url, token).health()) }
             }
             result.fold(
                 onSuccess = { health ->
                     val version = health?.get("version")?.takeIf { it.isJsonPrimitive }?.asString ?: "?"
-                    app.settings.setBaseUrl(url)
+                    val savedUrl = url.trim().trimEnd('/')
+                    val savedToken = token.trim()
+                    app.settings.setServer(savedUrl, savedToken)
+                    url = savedUrl
+                    token = savedToken
                     status = "Connected — kcode $version"
-                    editing = false
                 },
                 onFailure = { status = "Failed: ${it.message}" }
             )
@@ -104,10 +112,35 @@ fun SettingsScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Done,
+                    imeAction = ImeAction.Next,
                 ),
                 shape = MaterialTheme.shapes.large,
                 modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it; status = null },
+                label = { Text("Bearer token") },
+                placeholder = { Text("from session-server.token") },
+                leadingIcon = { Text("🔑", style = MaterialTheme.typography.titleSmall) },
+                trailingIcon = {
+                    TextButton(onClick = { revealToken = !revealToken }) {
+                        Text(if (revealToken) "Hide" else "Show")
+                    }
+                },
+                visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                ),
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Paste ~/.kinetick/run/session-server.token. A trailing newline is ignored.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(
                 onClick = ::testAndSave,
@@ -149,7 +182,16 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "The phone must reach that machine on the same network.",
+                    "The server writes a bearer token to ~/.kinetick/run/session-server.token " +
+                        "(mode 0600), or use the value you passed as --server-token. " +
+                        "Every request needs it, including the health check.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "The phone must reach that machine on the same network. " +
+                        "Anyone with the token can read Sessions and run turns.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -42,9 +42,31 @@ class KcodeClientUrlTest {
 
     @Test
     fun usableUrlsAreAccepted() {
-        assertTrue(KcodeClient("http://127.0.0.1:8788").configured)
-        assertTrue(KcodeClient(" https://box.example:8788/ ").configured)
-        assertFalse(KcodeClient("ftp://box:8788").configured)
-        assertFalse(KcodeClient("   ").configured)
+        val token = "0123456789abcdef"
+        assertTrue(KcodeClient("http://127.0.0.1:8788", token).configured)
+        assertTrue(KcodeClient(" https://box.example:8788/ ", token).configured)
+        assertFalse(KcodeClient("ftp://box:8788", token).configured)
+        assertFalse(KcodeClient("   ", token).configured)
+        assertFalse(KcodeClient("http://127.0.0.1:8788").configured)
+        assertFalse(KcodeClient("http://127.0.0.1:8788", "short").configured)
+    }
+
+    @Test
+    fun missingTokenIsRejectedBeforeTheNetwork() {
+        val client = KcodeClient("http://127.0.0.1:8788", "   ")
+        val e = assertThrows(KcodeClient.KcodeException::class.java) { client.health() }
+        assertEquals(0, e.code)
+        assertEquals("Server token is required", e.message)
+    }
+
+    @Test
+    fun tokenShapeMatchesTheServer() {
+        val client = KcodeClient("http://127.0.0.1:8788", "has a space inside!!")
+        val e = assertThrows(KcodeClient.KcodeException::class.java) { client.health() }
+        assertEquals(0, e.code)
+        assertEquals(
+            "Server token must be 16 to 256 printable ASCII characters without spaces",
+            e.message,
+        )
     }
 }

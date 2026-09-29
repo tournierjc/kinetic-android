@@ -47,20 +47,25 @@ JAVA_HOME=<jdk17> ANDROID_HOME=<sdk> ./gradlew testDebugUnitTest
 drives a real server end to end and is skipped unless you point it at one:
 
 ```
-KCODE_BASE_URL=http://127.0.0.1:8788 ./gradlew testDebugUnitTest
+KCODE_BASE_URL=http://127.0.0.1:8788 KCODE_SERVER_TOKEN="$(tr -d '\n' < ~/.kinetick/run/session-server.token)" ./gradlew testDebugUnitTest
 ```
 
 CI (`.github/workflows/android.yml`) builds the APK and runs the offline tests on
 every push.
 
-minSdk 26, targetSdk 35. Requires the server write API (kinetick-code
-`feat/server-write-api`).
+minSdk 26, targetSdk 35. Requires the server write API and bearer-token auth
+(kinetick-code 0.6.8).
 
 ## Setup
 
-1. On your machine: `kcode --server --port 8788` (loopback by default; a LAN bind
-   is an execution surface — trust your network).
-2. In the app, tap **Server**, enter `http://<machine-ip>:8788`, Test & save.
+1. On your machine: `kcode --server --host 0.0.0.0 --port 8788` (loopback by
+   default; a LAN bind is an execution surface — trust your network).
+2. The process writes a bearer token to `~/.kinetick/run/session-server.token`
+   (mode `0600`) and does not print it. Pass `--server-token` to choose the
+   value yourself; it is written to the same file.
+3. In the app, tap **Settings**, enter `http://<machine-ip>:8788` and that
+   token, then Test & save. Every request, including `/health` and `GET /events`,
+   sends `Authorization: Bearer`.
 
 ## Layout
 
@@ -69,7 +74,8 @@ minSdk 26, targetSdk 35. Requires the server write API (kinetick-code
 - `api/Wire.kt` — tolerant JSON decoding; dispatches the stream on `type` because
   `message` is an object on `message` events and a string on `session-status`.
 - `api/KcodeClient.kt` — synchronous OkHttp client, one method per endpoint, SSE
-  entry points for `/prompt` and `/events`.
+  entry points for `/prompt` and `/events`. Attaches `Authorization: Bearer`
+  on every call.
 - `ui/ChatStore.kt` — turn reducer (message upserts, delta appends, rewind/replace,
   resync flag).
 - `ui/DiffView.kt`, `ui/ToolCard.kt` — preview rendering and tool cards.

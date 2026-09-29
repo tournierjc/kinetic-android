@@ -60,9 +60,12 @@ fun SessionListScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
-    val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
-    val configured = baseUrl.isNotBlank()
-    val client = remember(baseUrl) { KcodeClient(baseUrl) }
+    val server by app.settings.server.collectAsState(
+        initial = SettingsStore.ServerSettings(SettingsStore.NO_SERVER, ""),
+    )
+    val baseUrl = server.baseUrl
+    val client = remember(server) { KcodeClient(server.baseUrl, server.token) }
+    val configured = client.configured
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -90,7 +93,7 @@ fun SessionListScreen(
         }
     }
 
-    LaunchedEffect(baseUrl, showArchived) { if (configured) load() }
+    LaunchedEffect(server, showArchived) { if (configured) load() }
 
     val filtered = remember(sessions, query) {
         val q = query.trim().lowercase()
@@ -135,18 +138,28 @@ fun SessionListScreen(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("No kcode server yet", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        if (baseUrl.isBlank()) "No kcode server yet" else "Server token required",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "On the machine running your sessions:\n" +
-                            "kcode --server --host 0.0.0.0 --port 8788\n\n" +
-                            "Then point this app at that machine's LAN address.",
+                        if (baseUrl.isBlank()) {
+                            "On the machine running your sessions:\n" +
+                                "kcode --server --host 0.0.0.0 --port 8788\n\n" +
+                                "Then enter that address and the bearer token from\n" +
+                                "~/.kinetick/run/session-server.token."
+                        } else {
+                            "kcode --server refuses every request without\n" +
+                                "Authorization: Bearer.\n\n" +
+                                "Paste the token from ~/.kinetick/run/session-server.token."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))
-                    Button(onClick = onSettings) { Text("Set server URL") }
+                    Button(onClick = onSettings) { Text("Set up server") }
                 }
             }
 
