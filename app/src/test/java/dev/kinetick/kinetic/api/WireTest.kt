@@ -59,6 +59,17 @@ class WireTest {
     }
 
     @Test
+    fun childSessionFields() {
+        val s = Wire.session(
+            """{"sessionId":"c1","sessionKind":"task","parentSessionId":"p1","visibility":"visible","title":"scan"}"""
+        )!!
+        assertEquals("task", s.sessionKind)
+        assertEquals("p1", s.parentSessionId)
+        assertEquals("visible", s.visibility)
+        assertTrue(s.isSubagentSession())
+    }
+
+    @Test
     fun singleSession() {
         val s = Wire.session(dec(SESSION))!!
         assertEquals("V2 probe", s.title)

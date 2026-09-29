@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -176,38 +175,6 @@ private fun prettyJson(el: JsonElement): String = when {
     }.getOrDefault(el.toString())
 }
 
-/** Assistant prose in a bubble; thinking and tools live outside it, in order. */
-@Composable
-fun AssistantBubble(content: String, streaming: Boolean) {
-    // The runtime prefixes assistant text with blank lines; in a bubble they
-    // read as a hole above the answer.
-    val shown = content.trimStart('\n', '\r', ' ', '\t')
-    if (shown.isEmpty()) return
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.widthIn(max = 360.dp).padding(vertical = 2.dp),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            SelectionContainer {
-                Text(
-                    shown,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = Fonts.Ui,
-                )
-            }
-            if (streaming) {
-                Text(
-                    "▍",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-    }
-}
-
 /** An assistant message: thinking + text + tool calls, in the order received. */
 @Composable
 fun AssistantParts(message: ChatMessage) {
@@ -215,13 +182,14 @@ fun AssistantParts(message: ChatMessage) {
     if (parts.isEmpty()) {
         if (!message.thinking.isNullOrBlank()) ThinkingBlock(message.thinking, message.thinkingDurationMs)
         message.toolCalls.forEach { ToolCard(it) }
-        if (message.content.isNotBlank()) AssistantBubble(message.content, message.streaming)
+        if (message.content.isNotBlank()) MessageProse(message.content, message.streaming)
     } else {
-        parts.forEach { part ->
+        val lastText = parts.indexOfLast { it is MessagePart.Text && it.content.isNotBlank() }
+        parts.forEachIndexed { index, part ->
             when (part) {
                 is MessagePart.Thinking -> ThinkingBlock(part.content, part.durationMs)
                 is MessagePart.Text -> if (part.content.isNotBlank()) {
-                    AssistantBubble(part.content, message.streaming)
+                    MessageProse(part.content, message.streaming && index == lastText)
                 }
                 is MessagePart.Tool -> ToolCard(part.toolCall)
             }

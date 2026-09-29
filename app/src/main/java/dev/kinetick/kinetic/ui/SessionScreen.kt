@@ -1,26 +1,23 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.kinetick.kinetic.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
-import dev.kinetick.kinetic.api.ChatMessage
 import dev.kinetick.kinetic.api.Interactions
 import dev.kinetick.kinetic.api.KcodeClient
 import dev.kinetick.kinetic.api.PermissionRequest
@@ -57,6 +54,7 @@ fun SessionScreen(
     val scope = rememberCoroutineScope()
 
     var tab by remember { mutableIntStateOf(0) }
+    var subagentCount by remember(sessionId) { mutableIntStateOf(0) }
     var session by remember { mutableStateOf<SessionInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var input by remember { mutableStateOf("") }
@@ -90,6 +88,10 @@ fun SessionScreen(
         runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
             .onSuccess { session = it }
             .onFailure { error = it.message }
+        // Badge the Agents tab before it is opened. The tab replaces this with
+        // the merged child count once it loads.
+        runCatching { withContext(Dispatchers.IO) { client.delegation(sessionId) } }
+            .onSuccess { subagentCount = it.members.size }
         reloadHistory()
         reloadInteractions()
     }
@@ -116,10 +118,6 @@ fun SessionScreen(
 
     DisposableEffect(sessionId) {
         onDispose { source?.cancel() }
-    }
-
-    LaunchedEffect(state.messages.size, state.streamingMessageId) {
-        if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
     }
 
     fun startStream(text: String) {
@@ -171,9 +169,25 @@ fun SessionScreen(
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
         TopAppBar(
             title = {
+                val channel = session?.title ?: sessionId
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(session?.title ?: sessionId, maxLines = 1)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "#",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            channel,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
                         if (state.running) {
                             Spacer(Modifier.width(8.dp))
                             LinearProgressIndicator(
@@ -183,15 +197,25 @@ fun SessionScreen(
                             )
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            session?.workspaceDir?.substringAfterLast('/') ?: "",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (state.status != "idle") {
-                            Spacer(Modifier.width(6.dp))
-                            StatusPill(state.status)
+                    val subtitle = listOfNotNull(
+                        session?.takeIf { it.isSubagentSession() }?.let { "subagent" },
+                        session?.workspaceDir?.substringAfterLast('/')?.takeIf { it.isNotBlank() },
+                    ).joinToString("  ·  ")
+                    if (subtitle.isNotBlank() || state.status != "idle") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (subtitle.isNotBlank()) {
+                                Text(
+                                    subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (state.status != "idle") {
+                                if (subtitle.isNotBlank()) Spacer(Modifier.width(6.dp))
+                                StatusPill(state.status)
+                            }
                         }
                     }
                 }
@@ -231,18 +255,37 @@ fun SessionScreen(
             contentColor = MaterialTheme.colorScheme.primary,
         ) {
             TABS.forEachIndexed { i, label ->
+                val shown = if (i == 1 && subagentCount > 0) "Agents $subagentCount" else label
                 Tab(
                     selected = tab == i,
                     onClick = { tab = i },
                     text = {
                         Text(
-                            label,
+                            shown,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = if (tab == i) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
                         )
                     },
                     modifier = Modifier.padding(vertical = 12.dp),
                 )
+            }
+        }
+
+        session?.parentSessionId?.takeIf { it.isNotBlank() && it != sessionId }?.let { parentId ->
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Subagent thread",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    TextButton(onClick = { onOpenSession(parentId) }) { Text("Open parent") }
+                }
             }
         }
 
@@ -286,8 +329,20 @@ fun SessionScreen(
 
         Box(Modifier.weight(1f)) {
             when (tab) {
-                0 -> ChatTab(state, listState) { scope.launch { reloadHistory() } }
-                1 -> AgentsTab(client, sessionId) { scope.launch { reloadHistory() } }
+                0 -> ChatTab(
+                    state = state,
+                    listState = listState,
+                    channelName = session?.title ?: "session",
+                    agentName = session?.agentName,
+                    onResync = { scope.launch { reloadHistory() } },
+                )
+                1 -> AgentsTab(
+                    client = client,
+                    sessionId = sessionId,
+                    onOpenSession = onOpenSession,
+                    onCount = { subagentCount = it },
+                    onTreeStopped = { scope.launch { reloadHistory() } },
+                )
                 2 -> QueueTab(client, sessionId)
                 else -> InfoTab(
                     client = client,
@@ -310,6 +365,7 @@ fun SessionScreen(
                 value = input,
                 onValueChange = { input = it },
                 running = state.running,
+                channelName = session?.title,
                 onSend = { onPrimaryAction() },
                 onQueue = { onQueueAction() },
             )
@@ -368,7 +424,13 @@ fun SessionScreen(
 }
 
 @Composable
-private fun ChatTab(state: TurnState, listState: LazyListState, onResync: () -> Unit) {
+private fun ChatTab(
+    state: TurnState,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    channelName: String,
+    agentName: String?,
+    onResync: () -> Unit,
+) {
     Column(Modifier.fillMaxSize()) {
         if (state.needsResync) {
             Card(
@@ -394,64 +456,16 @@ private fun ChatTab(state: TurnState, listState: LazyListState, onResync: () -> 
                 it,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            items(state.messages, key = { it.id ?: "m${it.hashCode()}" }) { message ->
-                MessageRow(message)
-            }
-        }
-    }
-}
-
-@Composable
-private fun MessageRow(message: ChatMessage) {
-    val isUser = message.role == "user"
-    val isSystem = message.role == "system"
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-        horizontalAlignment = when {
-            isUser -> Alignment.End
-            isSystem -> Alignment.CenterHorizontally
-            else -> Alignment.Start
-        }
-    ) {
-        when {
-            isUser -> Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
-                modifier = Modifier.widthIn(max = 340.dp)
-            ) {
-                SelectionContainer {
-                    Text(
-                        message.content.trim(),
-                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = Fonts.Ui,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-            }
-
-            isSystem -> Text(
-                message.content.ifBlank { message.kind ?: "system" },
-                style = MaterialTheme.typography.labelSmall,
-                fontStyle = FontStyle.Italic,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
-                AssistantParts(message)
-            }
-        }
+        ChatTranscript(
+            messages = state.messages,
+            listState = listState,
+            channelName = channelName,
+            agentName = agentName,
+            streamingMessageId = state.streamingMessageId,
+        )
     }
 }
 
@@ -460,40 +474,56 @@ private fun Composer(
     value: String,
     onValueChange: (String) -> Unit,
     running: Boolean,
+    channelName: String?,
     onSend: () -> Unit,
     onQueue: () -> Unit,
 ) {
     val canSend = value.isNotBlank()
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+    val hint = when {
+        running -> "Steer this turn…"
+        !channelName.isNullOrBlank() -> "Message #$channelName"
+        else -> "Message…"
+    }
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             if (running) {
                 Text(
-                    "🔄 A turn is running — Send steers it, Queue defers it.",
+                    "A turn is running. Send steers it — Queue holds a follow-up.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 6.dp),
+                    modifier = Modifier.padding(start = 6.dp, bottom = 6.dp),
                 )
             }
-            Row(verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text(if (running) "Steer the agent…" else "Message…") },
-                    maxLines = 5,
-                    shape = RoundedCornerShape(22.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
-                )
-                Spacer(Modifier.width(8.dp))
-                Column(horizontalAlignment = Alignment.End) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Row(
+                    Modifier.padding(start = 4.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    TextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text(hint) },
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                        ),
+                    )
                     FilledIconButton(
                         enabled = canSend,
                         onClick = onSend,
+                        modifier = Modifier.padding(bottom = 4.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -501,14 +531,15 @@ private fun Composer(
                     ) {
                         Text(if (running) "🧭" else "➤", style = MaterialTheme.typography.titleMedium)
                     }
-                    if (running) {
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedButton(
-                            enabled = canSend,
-                            onClick = onQueue,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        ) { Text("Queue", style = MaterialTheme.typography.labelSmall) }
-                    }
+                }
+            }
+            if (running) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(
+                        enabled = canSend,
+                        onClick = onQueue,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    ) { Text("Queue") }
                 }
             }
         }
