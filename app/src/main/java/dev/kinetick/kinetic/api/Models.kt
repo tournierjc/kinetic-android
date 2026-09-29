@@ -185,7 +185,16 @@ data class SessionInfo(
     val updatedAt: Long? = null,
     val model: SessionModel? = null,
     val errorMessage: String? = null,
-)
+) {
+    /**
+     * Delegated work stays out of the main session list. The server forces
+     * `sessionKind = task` rows to `visible`, and every child carries
+     * `parentSessionId`, so a flat `/sessions` page would otherwise show them
+     * next to real conversations. User forks are roots and have no parent.
+     */
+    fun isSubagentSession(): Boolean =
+        !parentSessionId.isNullOrBlank() || sessionKind.equals("task", ignoreCase = true)
+}
 
 data class SessionModel(val providerId: String? = null, val modelId: String? = null, val variant: String? = null)
 

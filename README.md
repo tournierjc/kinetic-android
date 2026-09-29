@@ -6,7 +6,8 @@ drive your kcode Sessions from your phone.
 ## Features
 
 **Conversation**
-- **Session switch** — list, pin, archive, create and open any Session on the server.
+- **Session switch** — list, pin, archive, create and open a Session. Subagent
+  sessions stay off this list; they open from their parent.
 - **Live turns** — `POST /sessions/:id/prompt` streamed over SSE. Handles the full
   `TuiStreamEvent` contract: `delta` chunks, `message` upserts, `messages-replaced`,
   `messages-rewound`, `resync-required`, `session-status`, `error`, `done`.
@@ -28,7 +29,7 @@ drive your kcode Sessions from your phone.
 
 **Agents & resources** (per-session tabs)
 - **Subagents** — delegation snapshot with queued/running/completed/failed/stopped
-  status, `Stop tree`, plus background tasks.
+  status, `Stop tree`, plus background tasks. Tap a row to open that session.
 - **Queue** — snapshot, continue, steer an item into the live turn, drop an item.
 - **Info** — token/cost usage, context-window gauge, model picker from the server
   roster, rename/pin/archive, fork, and the skill list.

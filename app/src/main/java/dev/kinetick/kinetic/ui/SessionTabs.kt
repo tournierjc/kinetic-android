@@ -13,6 +13,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.api.BackgroundTask
 import dev.kinetick.kinetic.api.ContextSnapshot
+import dev.kinetick.kinetic.api.DelegationMember
 import dev.kinetick.kinetic.api.DelegationSnapshot
 import dev.kinetick.kinetic.api.ForkOptions
 import dev.kinetick.kinetic.api.KcodeClient
@@ -27,11 +28,92 @@ import kotlinx.coroutines.withContext
 
 // ---------------------------------------------------------------- subagents
 
+internal data class SubagentLink(
+    val sessionId: String,
+    val title: String,
+    val status: String,
+    val detail: String?,
+    val updatedAt: Long?,
+)
+
+private val ACTIVE_SUBAGENT = setOf("running", "queued", "started", "in_progress", "decision-blocked")
+
+/**
+ * One row per child session. Delegation members, parented sessions, and
+ * background tasks that point at a session all collapse onto the same id so
+ * the parent is the only door into that transcript.
+ */
+internal fun mergeSubagentLinks(
+    parentSessionId: String,
+    members: List<DelegationMember>,
+    children: List<SessionInfo>,
+    background: List<BackgroundTask> = emptyList(),
+): List<SubagentLink> {
+    val childrenById = children
+        .filter { it.sessionId.isNotBlank() && it.sessionId != parentSessionId }
+        .associateBy { it.sessionId }
+    val seen = linkedSetOf<String>()
+    val links = mutableListOf<SubagentLink>()
+    for (member in members) {
+        if (member.sessionId.isBlank() || member.sessionId == parentSessionId) continue
+        if (!seen.add(member.sessionId)) continue
+        links += subagentLink(member, childrenById[member.sessionId])
+    }
+    for (child in childrenById.values) {
+        if (!seen.add(child.sessionId)) continue
+        links += subagentLink(null, child)
+    }
+    for (task in background) {
+        val id = task.sessionId?.takeIf { it.isNotBlank() && it != parentSessionId } ?: continue
+        if (!seen.add(id)) continue
+        links += SubagentLink(
+            sessionId = id,
+            title = task.label?.takeIf { it.isNotBlank() } ?: id,
+            status = task.status?.takeIf { it.isNotBlank() } ?: "idle",
+            detail = null,
+            updatedAt = null,
+        )
+    }
+    return links.sortedWith(
+        compareByDescending<SubagentLink> { it.status.lowercase() in ACTIVE_SUBAGENT }
+            .thenByDescending { it.updatedAt ?: 0L }
+    )
+}
+
+private fun subagentLink(
+    member: DelegationMember?,
+    child: SessionInfo?,
+): SubagentLink {
+    val id = member?.sessionId ?: child!!.sessionId
+    val title = member?.task?.takeIf { it.isNotBlank() }
+        ?: child?.title?.takeIf { it.isNotBlank() }
+        ?: member?.agentName?.takeIf { it.isNotBlank() }
+        ?: id
+    val status = member?.status?.takeIf { it.isNotBlank() && it != "unknown" }
+        ?: child?.status?.takeIf { it.isNotBlank() }
+        ?: member?.status?.takeIf { it.isNotBlank() }
+        ?: "idle"
+    val detail = listOfNotNull(
+        member?.agentName ?: child?.agentName,
+        child?.archived?.takeIf { it }?.let { "archived" },
+        member?.errorMessage ?: child?.errorMessage,
+    ).distinct().joinToString(" · ").ifBlank { null }
+    val updated = child?.updatedAt ?: child?.createdAt ?: member?.updatedAtMs ?: member?.createdAtMs
+    return SubagentLink(id, title, status, detail, updated)
+}
+
 @Composable
-fun AgentsTab(client: KcodeClient, sessionId: String, onOpen: () -> Unit) {
+fun AgentsTab(
+    client: KcodeClient,
+    sessionId: String,
+    onOpenSession: (String) -> Unit,
+    onCount: (Int) -> Unit,
+    onTreeStopped: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    var snapshot by remember { mutableStateOf<DelegationSnapshot?>(null) }
-    var tasks by remember { mutableStateOf<List<BackgroundTask>>(emptyList()) }
+    var snapshot by remember(sessionId) { mutableStateOf<DelegationSnapshot?>(null) }
+    var tasks by remember(sessionId) { mutableStateOf<List<BackgroundTask>>(emptyList()) }
+    var children by remember(sessionId) { mutableStateOf<List<SessionInfo>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
 
     suspend fun load() {
@@ -39,70 +121,123 @@ fun AgentsTab(client: KcodeClient, sessionId: String, onOpen: () -> Unit) {
             .onSuccess { snapshot = it }
         runCatching { withContext(Dispatchers.IO) { client.backgroundTasks(sessionId) } }
             .onSuccess { tasks = it }
+        runCatching { withContext(Dispatchers.IO) { childSessions(client, sessionId) } }
+            .onSuccess { children = it }
     }
 
     LaunchedEffect(sessionId) { load() }
+
+    val links = mergeSubagentLinks(
+        parentSessionId = sessionId,
+        members = snapshot?.members ?: emptyList(),
+        children = children,
+        background = tasks,
+    )
+    LaunchedEffect(links.size) { onCount(links.size) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Subagents", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton(onClick = { scope.launch { load() } }) { Text("Refresh") }
             TextButton(
-                enabled = !busy && snapshot?.members?.any { it.status == "running" || it.status == "queued" } == true,
+                enabled = !busy && links.any { it.status.lowercase() in ACTIVE_SUBAGENT },
                 onClick = {
                     busy = true
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) { client.stopDelegation(sessionId) } }
                         busy = false
                         load()
-                        onOpen()
+                        onTreeStopped()
                     }
                 }
             ) { Text("Stop tree") }
         }
+        Text(
+            "Delegated sessions open from here. They stay off the main session list.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
 
-        val members = snapshot?.members ?: emptyList()
-        if (members.isEmpty()) {
+        if (links.isEmpty()) {
             Text(
-                "No delegated agents on this session.",
+                "No subagents on this session.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        members.forEach { member ->
-            ListItem(
-                headlineContent = { Text(member.task ?: member.sessionId, maxLines = 2) },
-                supportingContent = {
+        links.forEach { link ->
+            SectionCard(onClick = { onOpenSession(link.sessionId) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            link.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        link.detail?.let {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        StatusPill(link.status)
+                        relativeTime(link.updatedAt)?.let { stamp ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                stamp,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     Text(
-                        listOfNotNull(
-                            member.agentName,
-                            member.status,
-                            member.errorMessage,
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall
+                        "›",
+                        modifier = Modifier.padding(start = 8.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                },
-                leadingContent = { Text(statusGlyph(member.status)) },
-            )
-            HorizontalDivider()
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
 
-        Spacer(Modifier.height(16.dp))
-        Text("Background tasks", style = MaterialTheme.typography.titleMedium)
-        if (tasks.isEmpty()) {
-            Text(
-                "None.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        tasks.forEach { t ->
-            ListItem(
-                headlineContent = { Text(t.label ?: t.id ?: t.taskId ?: "task", maxLines = 1) },
-                supportingContent = { Text(t.status ?: "", style = MaterialTheme.typography.labelSmall) },
-            )
+        val looseTasks = tasks.filter { it.sessionId.isNullOrBlank() }
+        if (looseTasks.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Background tasks", style = MaterialTheme.typography.titleMedium)
+            looseTasks.forEach { t ->
+                ListItem(
+                    headlineContent = { Text(t.label ?: t.id ?: t.taskId ?: "task", maxLines = 1) },
+                    supportingContent = { Text(t.status ?: "", style = MaterialTheme.typography.labelSmall) },
+                    leadingContent = { Text(statusGlyph(t.status ?: "")) },
+                )
+            }
         }
     }
+}
+
+/** Page the catalogue until the parent's children are collected, or a few pages pass. */
+private suspend fun childSessions(client: KcodeClient, parentId: String): List<SessionInfo> {
+    val found = mutableListOf<SessionInfo>()
+    var cursor: String? = null
+    val seenCursors = mutableSetOf<String>()
+    repeat(4) {
+        val page = client.listSessions(limit = 80, cursor = cursor, includeArchived = true)
+        found += page.sessions.filter { it.parentSessionId == parentId }
+        val next = page.nextCursor
+        if (!page.hasMore || next.isNullOrBlank() || !seenCursors.add(next)) return found
+        cursor = next
+    }
+    return found
 }
 
 private fun statusGlyph(status: String): String = when (status) {

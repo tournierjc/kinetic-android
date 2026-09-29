@@ -95,10 +95,13 @@ fun SessionListScreen(
 
     LaunchedEffect(server, showArchived) { if (configured) load() }
 
-    val filtered = remember(sessions, query) {
+    // Subagent (task / parented) sessions are opened from their parent, never
+    // from this list — including when a search would otherwise surface them.
+    val listed = remember(sessions) { sessions.filterNot { it.isSubagentSession() } }
+    val filtered = remember(listed, query) {
         val q = query.trim().lowercase()
-        val base = if (q.isEmpty()) sessions
-        else sessions.filter {
+        val base = if (q.isEmpty()) listed
+        else listed.filter {
             (it.title ?: "").lowercase().contains(q) ||
                 (it.workspaceDir ?: "").lowercase().contains(q) ||
                 it.sessionId.lowercase().contains(q)
