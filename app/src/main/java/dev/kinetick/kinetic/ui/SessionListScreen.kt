@@ -61,8 +61,9 @@ fun SessionListScreen(
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
     val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
+    val token by app.settings.token.collectAsState(initial = "")
     val configured = baseUrl.isNotBlank()
-    val client = remember(baseUrl) { KcodeClient(baseUrl) }
+    val client = remember(baseUrl, token) { KcodeClient(baseUrl, token) }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -90,7 +91,7 @@ fun SessionListScreen(
         }
     }
 
-    LaunchedEffect(baseUrl, showArchived) { if (configured) load() }
+    LaunchedEffect(baseUrl, token, showArchived) { if (configured) load() }
 
     val filtered = remember(sessions, query) {
         val q = query.trim().lowercase()
@@ -140,13 +141,13 @@ fun SessionListScreen(
                     Text(
                         "On the machine running your sessions:\n" +
                             "kcode --server --host 0.0.0.0 --port 8788\n\n" +
-                            "Then point this app at that machine's LAN address.",
+                            "Copy the bearer token from the path the server logs, then enter that machine's LAN address and the token.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))
-                    Button(onClick = onSettings) { Text("Set server URL") }
+                    Button(onClick = onSettings) { Text("Set server") }
                 }
             }
 

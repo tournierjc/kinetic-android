@@ -16,7 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import okhttp3.Response
 import okhttp3.sse.EventSource
@@ -33,6 +34,8 @@ import okhttp3.sse.EventSourceListener
 class EventStreamService : Service() {
 
     private var source: EventSource? = null
+    private var generation = 0
+    private var watching = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -50,35 +53,48 @@ class EventStreamService : Service() {
     }
 
     private fun connect() {
+        if (watching) return
+        watching = true
         scope.launch {
             val app = application as KineticApp
-            val base = app.settings.baseUrl.first()
-            if (base.isBlank()) {
-                // Nothing to subscribe to until the user configures a server;
-                // building a client here would only throw on the empty URL.
-                updateNotification("No kcode server configured")
-                return@launch
-            }
-            val client = KcodeClient(base)
-            source?.cancel()
-            source = client.eventStream(object : EventSourceListener() {
-                override fun onOpen(es: EventSource, response: Response) {
-                    updateNotification("Connected to $base")
-                }
-
-                override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
-                    handleEvent(type, data)
-                }
-
-                override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
-                    updateNotification("Disconnected — retrying")
-                    // START_STICKY restarts the service; pause first to avoid a hot loop.
-                    scope.launch {
-                        delay(5000)
-                        stopSelf()
+            combine(app.settings.baseUrl, app.settings.token) { base, token -> base to token }
+                .distinctUntilChanged()
+                .collect { (base, token) ->
+                    // Bump first so a cancel of the previous stream is ignored.
+                    val ticket = ++generation
+                    source?.cancel()
+                    source = null
+                    if (base.isBlank()) {
+                        updateNotification("No kcode server configured")
+                        return@collect
                     }
+                    val client = KcodeClient(base, token)
+                    source = client.eventStream(object : EventSourceListener() {
+                        override fun onOpen(es: EventSource, response: Response) {
+                            if (ticket != generation) return
+                            updateNotification("Connected to $base")
+                        }
+
+                        override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
+                            if (ticket != generation) return
+                            handleEvent(type, data)
+                        }
+
+                        override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+                            if (ticket != generation) return
+                            val denied = response?.code == 401
+                            updateNotification(
+                                if (denied) "Server refused the token — open Settings"
+                                else "Disconnected — retrying",
+                            )
+                            // START_STICKY restarts the service; pause first to avoid a hot loop.
+                            scope.launch {
+                                delay(if (denied) 15_000 else 5_000)
+                                if (ticket == generation) stopSelf()
+                            }
+                        }
+                    })
                 }
-            })
         }
     }
 

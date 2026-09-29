@@ -16,11 +16,16 @@ import java.util.concurrent.TimeUnit
  * Synchronous client for the `kcode --server` HTTP API.
  * Endpoint reference: docs/harness-integration.md of kinetick-code.
  *
+ * Current servers require `Authorization: Bearer` on every request, including
+ * `/health` and the SSE streams. [token] is optional here so a server that
+ * predates that check still answers; a missing or wrong token comes back as
+ * 401 `unauthorized`.
+ *
  * Capability-optional endpoints answer 404 with
  * `{"error":"<capability> is not supported by this runtime"}` — surfaced as
  * [KcodeException] with code 404 so callers degrade instead of failing.
  */
-class KcodeClient(val baseUrl: String) {
+class KcodeClient(val baseUrl: String, val token: String = "") {
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -30,6 +35,19 @@ class KcodeClient(val baseUrl: String) {
     private val JSON = "application/json; charset=utf-8".toMediaType()
 
     class KcodeException(val code: Int, message: String) : Exception(message)
+
+    companion object {
+        /**
+         * What to show when the server answers 401. [hadToken] distinguishes a
+         * blank credential from one the server rejected.
+         */
+        fun unauthorizedMessage(hadToken: Boolean): String =
+            if (hadToken) {
+                "The server refused this token. Paste the contents of session-server.token — kcode --server logs that path."
+            } else {
+                "This server requires a bearer token. Paste the contents of session-server.token — kcode --server logs that path."
+            }
+    }
 
     /** True once the user has entered a usable server URL. */
     val configured: Boolean
@@ -53,6 +71,17 @@ class KcodeClient(val baseUrl: String) {
         } catch (e: IllegalArgumentException) {
             throw KcodeException(0, "Invalid server URL: ${e.message}")
         }
+        val bearer = ServerToken.normalize(token)
+        if (bearer.isNotEmpty()) {
+            try {
+                request.header("Authorization", "Bearer $bearer")
+            } catch (e: IllegalArgumentException) {
+                throw KcodeException(
+                    0,
+                    "Server token contains characters that cannot go in an Authorization header",
+                )
+            }
+        }
         return request
     }
 
@@ -62,6 +91,9 @@ class KcodeClient(val baseUrl: String) {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
+                if (resp.code == 401) {
+                    throw KcodeException(401, unauthorizedMessage(ServerToken.normalize(token).isNotEmpty()))
+                }
                 val msg = Wire.obj(text)?.get("error")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: "HTTP ${resp.code}"
                 throw KcodeException(resp.code, msg)

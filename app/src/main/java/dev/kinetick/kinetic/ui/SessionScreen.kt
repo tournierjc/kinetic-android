@@ -23,6 +23,7 @@ import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.ChatMessage
 import dev.kinetick.kinetic.api.Interactions
 import dev.kinetick.kinetic.api.KcodeClient
+import dev.kinetick.kinetic.api.ServerToken
 import dev.kinetick.kinetic.api.PermissionRequest
 import dev.kinetick.kinetic.api.SessionInfo
 import dev.kinetick.kinetic.api.Wire
@@ -50,8 +51,9 @@ fun SessionScreen(
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
     val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
+    val token by app.settings.token.collectAsState(initial = "")
     val configured = baseUrl.isNotBlank()
-    val client = remember(baseUrl) { KcodeClient(baseUrl) }
+    val client = remember(baseUrl, token) { KcodeClient(baseUrl, token) }
     val store = remember(sessionId, baseUrl) { ChatStore() }
     val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -85,7 +87,7 @@ fun SessionScreen(
             .onSuccess { interact = it }
     }
 
-    LaunchedEffect(sessionId, baseUrl) {
+    LaunchedEffect(sessionId, baseUrl, token) {
         if (!configured) return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
             .onSuccess { session = it }
@@ -130,7 +132,11 @@ fun SessionScreen(
             }
 
             override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
-                error = "stream failed: ${t?.message ?: response?.message}"
+                error = if (response?.code == 401) {
+                    KcodeClient.unauthorizedMessage(ServerToken.normalize(client.token).isNotEmpty())
+                } else {
+                    "stream failed: ${t?.message ?: response?.message ?: "closed"}"
+                }
             }
         })
     }

@@ -3,6 +3,7 @@ package dev.kinetick.kinetic.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -12,9 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
+import dev.kinetick.kinetic.api.ServerToken
 import dev.kinetick.kinetic.api.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -32,25 +36,27 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
 
     var url by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    var revealToken by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var editing by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         url = app.settings.baseUrl.first()
+        token = app.settings.token.first()
     }
 
     fun testAndSave() {
         scope.launch {
             status = "Testing…"
             val result = withContext(Dispatchers.IO) {
-                runCatching { dev.kinetick.kinetic.api.Wire.obj(KcodeClient(url).health()) }
+                runCatching { dev.kinetick.kinetic.api.Wire.obj(KcodeClient(url, token).health()) }
             }
             result.fold(
                 onSuccess = { health ->
                     val version = health?.get("version")?.takeIf { it.isJsonPrimitive }?.asString ?: "?"
-                    app.settings.setBaseUrl(url)
+                    app.settings.setServer(url, token)
+                    token = ServerToken.normalize(token)
                     status = "Connected — kcode $version"
-                    editing = false
                 },
                 onFailure = { status = "Failed: ${it.message}" }
             )
@@ -104,11 +110,44 @@ fun SettingsScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Done,
+                    imeAction = ImeAction.Next,
                 ),
                 shape = MaterialTheme.shapes.large,
                 modifier = Modifier.fillMaxWidth()
             )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it; status = null },
+                label = { Text("Bearer token") },
+                placeholder = { Text("paste session-server.token") },
+                leadingIcon = { Text("🔑", style = MaterialTheme.typography.titleSmall) },
+                trailingIcon = {
+                    TextButton(onClick = { revealToken = !revealToken }) {
+                        Text(if (revealToken) "Hide" else "Show")
+                    }
+                },
+                singleLine = true,
+                visualTransformation = if (revealToken) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (revealToken) KeyboardType.Text else KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = { testAndSave() }),
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth()
+            )
+            val normalizedToken = ServerToken.normalize(token)
+            if (normalizedToken.isNotEmpty() && !ServerToken.isAcceptable(token)) {
+                Text(
+                    "Use 16–256 printable characters, with no spaces.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Button(
                 onClick = ::testAndSave,
                 modifier = Modifier.fillMaxWidth(),
@@ -149,7 +188,7 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "The phone must reach that machine on the same network.",
+                    "The server requires a bearer token on every request. It writes the token to ~/.kinetick/run/session-server.token and logs that path without printing the token. Paste the file contents above, or start the server with --server-token. The phone must reach that machine on the same network.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
