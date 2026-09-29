@@ -16,11 +16,27 @@ import java.util.concurrent.TimeUnit
  * Synchronous client for the `kcode --server` HTTP API.
  * Endpoint reference: docs/harness-integration.md of kinetick-code.
  *
+ * Every request, including `/health` and the SSE streams, sends
+ * `Authorization: Bearer`. A missing or wrong token is `401`.
+ *
  * Capability-optional endpoints answer 404 with
  * `{"error":"<capability> is not supported by this runtime"}` — surfaced as
  * [KcodeException] with code 404 so callers degrade instead of failing.
  */
-class KcodeClient(val baseUrl: String) {
+class KcodeClient(val baseUrl: String, val token: String = "") {
+
+    companion object {
+        /**
+         * Same shape the server accepts: 16 to 256 printable ASCII characters,
+         * no spaces. Leading and trailing whitespace is ignored so a pasted
+         * token file (which ends in a newline) still matches.
+         */
+        fun usableToken(token: String): Boolean {
+            val value = token.trim()
+            if (value.length !in 16..256) return false
+            return value.all { it.code in 0x21..0x7E }
+        }
+    }
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -31,9 +47,13 @@ class KcodeClient(val baseUrl: String) {
 
     class KcodeException(val code: Int, message: String) : Exception(message)
 
-    /** True once the user has entered a usable server URL. */
+    /** True once the user has entered a usable server URL and bearer token. */
     val configured: Boolean
-        get() = baseUrl.trim().let { it.startsWith("http://") || it.startsWith("https://") }
+        get() {
+            val base = baseUrl.trim()
+            val urlOk = base.startsWith("http://") || base.startsWith("https://")
+            return urlOk && usableToken(token)
+        }
 
     private fun url(path: String): String {
         val base = baseUrl.trim()
@@ -48,12 +68,27 @@ class KcodeClient(val baseUrl: String) {
 
     private fun builder(path: String): Request.Builder {
         val resolved = url(path)
+        val bearer = normalizedToken()
         val request = try {
-            Request.Builder().url(resolved)
+            Request.Builder()
+                .url(resolved)
+                .header("Authorization", "Bearer $bearer")
         } catch (e: IllegalArgumentException) {
             throw KcodeException(0, "Invalid server URL: ${e.message}")
         }
         return request
+    }
+
+    private fun normalizedToken(): String {
+        val value = token.trim()
+        if (value.isEmpty()) throw KcodeException(0, "Server token is required")
+        if (!usableToken(value)) {
+            throw KcodeException(
+                0,
+                "Server token must be 16 to 256 printable ASCII characters without spaces",
+            )
+        }
+        return value
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
@@ -62,6 +97,9 @@ class KcodeClient(val baseUrl: String) {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
+                if (resp.code == 401) {
+                    throw KcodeException(401, "Unauthorized — check the server token")
+                }
                 val msg = Wire.obj(text)?.get("error")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: "HTTP ${resp.code}"
                 throw KcodeException(resp.code, msg)

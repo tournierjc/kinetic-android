@@ -16,9 +16,10 @@ import okhttp3.sse.EventSourceListener
 /**
  * End-to-end client test against a live `kcode --server`.
  *
- * Opt-in: set `KCODE_BASE_URL` (e.g. `http://127.0.0.1:8788`) to run it. Each
- * test creates its own session and deletes it again, so no real conversation is
- * touched.
+ * Opt-in: set `KCODE_BASE_URL` (e.g. `http://127.0.0.1:8788`) and
+ * `KCODE_SERVER_TOKEN` (the bearer token from `session-server.token`) to run
+ * it. Each test creates its own session and deletes it again, so no real
+ * conversation is touched.
  *
  * Two sessions on purpose: a queued message on an idle session starts its own
  * turn, so the turn assertions need a session nothing else has written to.
@@ -26,12 +27,20 @@ import okhttp3.sse.EventSourceListener
 class KcodeClientLiveTest {
 
     private val baseUrl: String? = System.getenv("KCODE_BASE_URL")
+    private val token: String? = System.getenv("KCODE_SERVER_TOKEN")
 
-    private val client: KcodeClient get() = KcodeClient(baseUrl!!)
+    private val client: KcodeClient get() = KcodeClient(baseUrl!!, token!!)
+
+    private fun assumeLiveServer() {
+        assumeTrue(
+            "set KCODE_BASE_URL and KCODE_SERVER_TOKEN to run the live client test",
+            baseUrl != null && !token.isNullOrBlank(),
+        )
+    }
 
     @Test
     fun catalogueAndSessionWrites() {
-        assumeTrue("set KCODE_BASE_URL to run the live client test", baseUrl != null)
+        assumeLiveServer()
         val c = client
 
         // ---- descriptor ----
@@ -105,7 +114,7 @@ class KcodeClientLiveTest {
 
     @Test
     fun turnStreamAndTranscript() {
-        assumeTrue("set KCODE_BASE_URL to run the live client test", baseUrl != null)
+        assumeLiveServer()
         val c = client
         val workspace = tempDir()
         val sid = c.createSession(workspace, "Kinetic live turn").sessionId
