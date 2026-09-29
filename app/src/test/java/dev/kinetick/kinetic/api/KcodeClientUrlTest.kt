@@ -41,6 +41,43 @@ class KcodeClientUrlTest {
     }
 
     @Test
+    fun aUrlWithoutATokenIsRejectedBeforeTheNetwork() {
+        val client = KcodeClient("http://127.0.0.1:8788")
+        val e = assertThrows(KcodeClient.KcodeException::class.java) { client.health() }
+        assertEquals(0, e.code)
+        assertEquals("Server token is required", e.message)
+    }
+
+    @Test
+    fun aShortTokenIsRejectedBeforeTheNetwork() {
+        val client = KcodeClient("http://127.0.0.1:8788", "short")
+        val e = assertThrows(KcodeClient.KcodeException::class.java) { client.listSessions() }
+        assertEquals(0, e.code)
+        assertEquals(
+            "Server token must be 16 to 256 printable ASCII characters without spaces",
+            e.message,
+        )
+    }
+
+    @Test
+    fun pastedTokenFileContentsAreNormalized() {
+        val fileLine = "test-session-token-0123456789\n"
+        assertEquals("test-session-token-0123456789", KcodeClient.normalizeServerToken(fileLine))
+        assertEquals(
+            "test-session-token-0123456789",
+            KcodeClient.normalizeServerToken("Bearer test-session-token-0123456789"),
+        )
+        assertEquals(
+            "test-session-token-0123456789",
+            KcodeClient.normalizeServerToken("\"test-session-token-0123456789\""),
+        )
+        assertEquals(
+            "test-session-token-0123456789",
+            KcodeClient("http://127.0.0.1:8788", "  Bearer test-session-token-0123456789\n").token,
+        )
+    }
+
+    @Test
     fun usableUrlsAreAccepted() {
         assertTrue(KcodeClient("http://127.0.0.1:8788").configured)
         assertTrue(KcodeClient(" https://box.example:8788/ ").configured)

@@ -47,20 +47,27 @@ JAVA_HOME=<jdk17> ANDROID_HOME=<sdk> ./gradlew testDebugUnitTest
 drives a real server end to end and is skipped unless you point it at one:
 
 ```
-KCODE_BASE_URL=http://127.0.0.1:8788 ./gradlew testDebugUnitTest
+KCODE_BASE_URL=http://127.0.0.1:8788 \
+KCODE_SERVER_TOKEN="$(tr -d '\n' < ~/.kinetick/run/session-server.token)" \
+  ./gradlew testDebugUnitTest
 ```
 
 CI (`.github/workflows/android.yml`) builds the APK and runs the offline tests on
 every push.
 
 minSdk 26, targetSdk 35. Requires the server write API (kinetick-code
-`feat/server-write-api`).
+`feat/server-write-api`) and the bearer token added in kinetick-code 0.6.8.
 
 ## Setup
 
-1. On your machine: `kcode --server --port 8788` (loopback by default; a LAN bind
-   is an execution surface — trust your network).
-2. In the app, tap **Server**, enter `http://<machine-ip>:8788`, Test & save.
+1. On your machine: `kcode --server --host 0.0.0.0 --port 8788`. The default
+   bind is loopback; this publishes the port so the phone can reach it.
+   Anyone who has the token can drive the agent, and there is no TLS.
+2. Read the token. When `--server-token` is omitted, kcode writes one to
+   `~/.kinetick/run/session-server.token` and does not print it.
+3. In the app, open **Settings**, enter `http://<machine-ip>:8788` and that
+   token, then Test & save. Every request, including `GET /health` and the
+   `GET /events` notification stream, sends `Authorization: Bearer`.
 
 ## Layout
 
@@ -69,7 +76,8 @@ minSdk 26, targetSdk 35. Requires the server write API (kinetick-code
 - `api/Wire.kt` — tolerant JSON decoding; dispatches the stream on `type` because
   `message` is an object on `message` events and a string on `session-status`.
 - `api/KcodeClient.kt` — synchronous OkHttp client, one method per endpoint, SSE
-  entry points for `/prompt` and `/events`.
+  entry points for `/prompt` and `/events`. Attaches `Authorization: Bearer`
+  from the token saved in Settings.
 - `ui/ChatStore.kt` — turn reducer (message upserts, delta appends, rewind/replace,
   resync flag).
 - `ui/DiffView.kt`, `ui/ToolCard.kt` — preview rendering and tool cards.

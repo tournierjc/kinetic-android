@@ -16,11 +16,48 @@ import java.util.concurrent.TimeUnit
  * Synchronous client for the `kcode --server` HTTP API.
  * Endpoint reference: docs/harness-integration.md of kinetick-code.
  *
+ * Every request, including `GET /health` and `GET /events`, must carry
+ * `Authorization: Bearer <token>`. The token is the contents of
+ * `<data-dir>/run/session-server.token` (no trailing newline), or the value
+ * passed to `--server-token`. A missing or wrong token is `401`.
+ *
  * Capability-optional endpoints answer 404 with
  * `{"error":"<capability> is not supported by this runtime"}` — surfaced as
  * [KcodeException] with code 404 so callers degrade instead of failing.
  */
-class KcodeClient(val baseUrl: String) {
+class KcodeClient(val baseUrl: String, token: String = "") {
+
+    /** Token actually sent, after trimming a pasted newline or `Bearer ` prefix. */
+    val token: String = normalizeServerToken(token)
+
+    companion object {
+        /**
+         * The server accepts 16–256 printable ASCII characters and rejects
+         * anything else as unauthorized, including a short or spaced value.
+         */
+        const val MIN_TOKEN_LENGTH = 16
+        const val MAX_TOKEN_LENGTH = 256
+
+        /** Drop a trailing newline, surrounding quotes, and a pasted `Bearer ` prefix. */
+        fun normalizeServerToken(raw: String): String {
+            var value = raw.trim()
+            if (value.length >= 7 && value.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true)) {
+                value = value.substring(7).trim()
+            }
+            if (value.length >= 2) {
+                val quote = value.first()
+                if ((quote == '"' || quote == '\'') && value.last() == quote) {
+                    value = value.substring(1, value.lastIndex).trim()
+                }
+            }
+            return value
+        }
+
+        fun isValidServerToken(token: String): Boolean {
+            if (token.length < MIN_TOKEN_LENGTH || token.length > MAX_TOKEN_LENGTH) return false
+            return token.all { it.code in 0x21..0x7e }
+        }
+    }
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -48,12 +85,19 @@ class KcodeClient(val baseUrl: String) {
 
     private fun builder(path: String): Request.Builder {
         val resolved = url(path)
+        if (token.isEmpty()) throw KcodeException(0, "Server token is required")
+        if (!isValidServerToken(token)) {
+            throw KcodeException(
+                0,
+                "Server token must be 16 to 256 printable ASCII characters without spaces",
+            )
+        }
         val request = try {
             Request.Builder().url(resolved)
         } catch (e: IllegalArgumentException) {
             throw KcodeException(0, "Invalid server URL: ${e.message}")
         }
-        return request
+        return request.header("Authorization", "Bearer $token")
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
@@ -62,8 +106,12 @@ class KcodeClient(val baseUrl: String) {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
-                val msg = Wire.obj(text)?.get("error")?.takeIf { it.isJsonPrimitive }?.asString
-                    ?: "HTTP ${resp.code}"
+                val bodyError = Wire.obj(text)?.get("error")?.takeIf { it.isJsonPrimitive }?.asString
+                val msg = if (resp.code == 401 && (bodyError == null || bodyError == "unauthorized")) {
+                    "Unauthorized — check the server token in Settings"
+                } else {
+                    bodyError ?: "HTTP ${resp.code}"
+                }
                 throw KcodeException(resp.code, msg)
             }
             return text

@@ -1,6 +1,5 @@
 package dev.kinetick.kinetic.events
 
-import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -16,11 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Foreground service holding the Runtime event stream (GET /events) open.
@@ -33,6 +33,8 @@ import okhttp3.sse.EventSourceListener
 class EventStreamService : Service() {
 
     private var source: EventSource? = null
+    private var connectJob: Job? = null
+    private val streamGeneration = AtomicInteger(0)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -50,35 +52,49 @@ class EventStreamService : Service() {
     }
 
     private fun connect() {
-        scope.launch {
-            val app = application as KineticApp
-            val base = app.settings.baseUrl.first()
-            if (base.isBlank()) {
-                // Nothing to subscribe to until the user configures a server;
-                // building a client here would only throw on the empty URL.
-                updateNotification("No kcode server configured")
-                return@launch
-            }
-            val client = KcodeClient(base)
-            source?.cancel()
-            source = client.eventStream(object : EventSourceListener() {
-                override fun onOpen(es: EventSource, response: Response) {
-                    updateNotification("Connected to $base")
-                }
-
-                override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
-                    handleEvent(type, data)
-                }
-
-                override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
-                    updateNotification("Disconnected — retrying")
-                    // START_STICKY restarts the service; pause first to avoid a hot loop.
-                    scope.launch {
-                        delay(5000)
-                        stopSelf()
+        connectJob?.cancel()
+        val app = application as KineticApp
+        connectJob = scope.launch {
+            // Re-open the stream when the URL or token changes. A cancelled
+            // stream also fires onFailure; the generation ignores that.
+            app.settings.server.collect { config ->
+                val gen = streamGeneration.incrementAndGet()
+                source?.cancel()
+                source = null
+                when {
+                    config.baseUrl.isBlank() -> updateNotification("No kcode server configured")
+                    config.token.isBlank() -> updateNotification("Server token required")
+                    else -> {
+                        val opened = runCatching {
+                            val client = KcodeClient(config.baseUrl, config.token)
+                            source = client.eventStream(streamListener(config.baseUrl, gen))
+                        }
+                        opened.onFailure { error ->
+                            updateNotification(error.message ?: "Can't open the event stream")
+                        }
                     }
                 }
-            })
+            }
+        }
+    }
+
+    private fun streamListener(base: String, gen: Int) = object : EventSourceListener() {
+        override fun onOpen(es: EventSource, response: Response) {
+            if (gen == streamGeneration.get()) updateNotification("Connected to $base")
+        }
+
+        override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
+            if (gen == streamGeneration.get()) handleEvent(type, data)
+        }
+
+        override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+            if (gen != streamGeneration.get()) return
+            updateNotification("Disconnected — retrying")
+            // START_STICKY restarts the service; pause first to avoid a hot loop.
+            scope.launch {
+                delay(5000)
+                if (gen == streamGeneration.get()) stopSelf()
+            }
         }
     }
 
@@ -121,7 +137,9 @@ class EventStreamService : Service() {
     }
 
     override fun onDestroy() {
+        streamGeneration.incrementAndGet()
         source?.cancel()
+        connectJob?.cancel()
         scope.cancel()
         super.onDestroy()
     }

@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import dev.kinetick.kinetic.KineticApp
 import dev.kinetick.kinetic.api.KcodeClient
 import dev.kinetick.kinetic.api.SessionInfo
-import dev.kinetick.kinetic.data.SettingsStore
+import dev.kinetick.kinetic.data.ServerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -60,9 +60,8 @@ fun SessionListScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
-    val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
-    val configured = baseUrl.isNotBlank()
-    val client = remember(baseUrl) { KcodeClient(baseUrl) }
+    val server by app.settings.server.collectAsState(initial = ServerConfig.NONE)
+    val client = remember(server) { KcodeClient(server.baseUrl, server.token) }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -90,7 +89,7 @@ fun SessionListScreen(
         }
     }
 
-    LaunchedEffect(baseUrl, showArchived) { if (configured) load() }
+    LaunchedEffect(server, showArchived) { if (server.ready) load() }
 
     val filtered = remember(sessions, query) {
         val q = query.trim().lowercase()
@@ -118,7 +117,7 @@ fun SessionListScreen(
             )
         },
         floatingActionButton = {
-            if (configured) {
+            if (server.ready) {
                 FloatingActionButton(
                     onClick = { creating = true },
                     shape = MaterialTheme.shapes.large,
@@ -129,7 +128,7 @@ fun SessionListScreen(
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (!configured) {
+            if (!server.hasUrl) {
                 Column(
                     Modifier.fillMaxSize().padding(24.dp),
                     verticalArrangement = Arrangement.Center,
@@ -140,17 +139,36 @@ fun SessionListScreen(
                     Text(
                         "On the machine running your sessions:\n" +
                             "kcode --server --host 0.0.0.0 --port 8788\n\n" +
-                            "Then point this app at that machine's LAN address.",
+                            "Then enter that machine's LAN address and the token from " +
+                            "~/.kinetick/run/session-server.token.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))
-                    Button(onClick = onSettings) { Text("Set server URL") }
+                    Button(onClick = onSettings) { Text("Set up server") }
+                }
+            } else if (!server.hasToken) {
+                Column(
+                    Modifier.fillMaxSize().padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("Server token required", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "kcode refuses every request without a bearer token, including this list. " +
+                            "Paste the line from ~/.kinetick/run/session-server.token.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(onClick = onSettings) { Text("Add token") }
                 }
             }
 
-            if (configured) {
+            if (server.ready) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -177,7 +195,7 @@ fun SessionListScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
                     Text(
-                        "⚠ Can't reach $baseUrl — $it",
+                        "⚠ Can't reach ${server.baseUrl} — $it",
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(12.dp),
@@ -196,7 +214,7 @@ fun SessionListScreen(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (filtered.isEmpty() && !refreshing && configured) {
+                if (filtered.isEmpty() && !refreshing && server.ready) {
                     item {
                         Text(
                             if (query.isNotBlank()) "Nothing matches “$query”."

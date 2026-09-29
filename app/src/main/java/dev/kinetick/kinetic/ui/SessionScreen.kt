@@ -26,7 +26,7 @@ import dev.kinetick.kinetic.api.KcodeClient
 import dev.kinetick.kinetic.api.PermissionRequest
 import dev.kinetick.kinetic.api.SessionInfo
 import dev.kinetick.kinetic.api.Wire
-import dev.kinetick.kinetic.data.SettingsStore
+import dev.kinetick.kinetic.data.ServerConfig
 import dev.kinetick.kinetic.events.EventBus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -49,10 +49,9 @@ fun SessionScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as KineticApp
-    val baseUrl by app.settings.baseUrl.collectAsState(initial = SettingsStore.NO_SERVER)
-    val configured = baseUrl.isNotBlank()
-    val client = remember(baseUrl) { KcodeClient(baseUrl) }
-    val store = remember(sessionId, baseUrl) { ChatStore() }
+    val server by app.settings.server.collectAsState(initial = ServerConfig.NONE)
+    val client = remember(server) { KcodeClient(server.baseUrl, server.token) }
+    val store = remember(sessionId, server.baseUrl) { ChatStore() }
     val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
 
@@ -85,8 +84,8 @@ fun SessionScreen(
             .onSuccess { interact = it }
     }
 
-    LaunchedEffect(sessionId, baseUrl) {
-        if (!configured) return@LaunchedEffect
+    LaunchedEffect(sessionId, server) {
+        if (!server.ready) return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
             .onSuccess { session = it }
             .onFailure { error = it.message }
@@ -246,12 +245,16 @@ fun SessionScreen(
             }
         }
 
-        if (!configured) {
+        if (!server.ready) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("No kcode server configured.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (server.hasUrl) "Server token required." else "No kcode server configured.",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 TextButton(onClick = onSettings) { Text("Set it up") }
             }
         }
