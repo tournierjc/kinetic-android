@@ -40,7 +40,9 @@ Every capability-optional endpoint answers `404` when the active Runtime lacks i
 the client surfaces that instead of silently failing. Skill policy and knowledge
 review require a session server that exposes
 `POST /sessions/:id/skill-policy`, `GET /skills/proposals`, and
-`POST /skills/proposals/:id/review` (kinetick-code #99 / #100).
+`POST /skills/proposals/:id/review` (kinetick-code #99 / #102). Idle Memory drafts
+target agent Memory unless `targetRef` is `user`; approve writes before the
+decision is recorded so a failed apply stays pending for retry.
 
 ## Build
 
