@@ -17,12 +17,16 @@ import dev.kinetick.kinetic.api.DelegationMember
 import dev.kinetick.kinetic.api.DelegationSnapshot
 import dev.kinetick.kinetic.api.ForkOptions
 import dev.kinetick.kinetic.api.KcodeClient
+import dev.kinetick.kinetic.api.KnowledgeProposal
 import dev.kinetick.kinetic.api.ModelEntry
 import dev.kinetick.kinetic.api.QueueSnapshot
 import dev.kinetick.kinetic.api.SessionInfo
+import dev.kinetick.kinetic.api.SessionSkillPolicy
 import dev.kinetick.kinetic.api.SessionUsage
 import dev.kinetick.kinetic.api.SkillEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -334,6 +338,14 @@ fun InfoTab(
     var context by remember { mutableStateOf<ContextSnapshot?>(null) }
     var models by remember { mutableStateOf<List<ModelEntry>>(emptyList()) }
     var skills by remember { mutableStateOf<List<SkillEntry>>(emptyList()) }
+    // Seed once per session; later loads only replace from a live getSession projection.
+    var skillPolicy by remember(sessionId) { mutableStateOf(session?.skillPolicy) }
+    var proposals by remember { mutableStateOf<List<KnowledgeProposal>>(emptyList()) }
+    var proposalsSupported by remember { mutableStateOf(true) }
+    /** List works but POST /review may be missing — keep the section, disable actions. */
+    var reviewSupported by remember { mutableStateOf(true) }
+    var policySupported by remember { mutableStateOf(true) }
+    var policyProbed by remember(sessionId) { mutableStateOf(false) }
     var forkOptions by remember { mutableStateOf<ForkOptions?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf(false) }
@@ -342,20 +354,198 @@ fun InfoTab(
     var confirmingDelete by remember { mutableStateOf(false) }
     // null = follow the selected model's provider; a set = the user's choice.
     var expandedProviders by remember(sessionId) { mutableStateOf<Set<String>?>(null) }
+    var editingProposalId by remember { mutableStateOf<String?>(null) }
+    var proposalDraftEdit by remember { mutableStateOf("") }
 
-    suspend fun load() {
-        runCatching { withContext(Dispatchers.IO) { client.usage(sessionId) } }.onSuccess { usage = it }
-        runCatching { withContext(Dispatchers.IO) { client.context(sessionId) } }.onSuccess { context = it }
-        runCatching { withContext(Dispatchers.IO) { client.models(sessionId) } }.onSuccess { models = it }
+    suspend fun refreshProposals() {
+        // Match TUI `/skills review`: list all pending drafts, not only this session.
+        runCatching {
+            withContext(Dispatchers.IO) {
+                client.knowledgeProposals(status = "pending", limit = 30)
+            }
+        }.onSuccess {
+            proposals = it.proposals.sortedWith(
+                compareByDescending<KnowledgeProposal> { it.sessionId == sessionId }
+                    .thenByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+            )
+            proposalsSupported = true
+        }.onFailure { err ->
+            val code = (err as? KcodeClient.KcodeException)?.code
+            if (code == 404) {
+                proposalsSupported = false
+                proposals = emptyList()
+            }
+        }
+    }
+
+    suspend fun refreshSkillState() {
+        runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+            .onSuccess { live ->
+                // Only overwrite when the live projection includes skillPolicy. A missing
+                // key must not resurrect the parent-list snapshot after a local update.
+                if (live.skillPolicy != null) skillPolicy = live.skillPolicy
+            }
+            .onFailure { /* keep last known policy */ }
         runCatching { withContext(Dispatchers.IO) { client.skills(session?.workspaceDir) } }
             .onSuccess { skills = it.skills }
-        runCatching { withContext(Dispatchers.IO) { client.forkOptions(sessionId) } }
-            .onSuccess { forkOptions = it }
+        refreshProposals()
+    }
+
+    /** One-shot probe so catalog/disposition controls degrade before the first failed tap. */
+    suspend fun probeSkillPolicyCapability() {
+        if (policyProbed || !policySupported) return
+        policyProbed = true
+        // Empty dispositions is a no-op patch that still exercises the route (404 → unsupported).
+        runCatching {
+            withContext(Dispatchers.IO) {
+                client.updateSkillPolicy(sessionId, dispositions = emptyMap())
+            }
+        }.onSuccess {
+            if (it.skillPolicy != null) skillPolicy = it.skillPolicy
+            policySupported = true
+        }.onFailure { err ->
+            val code = (err as? KcodeClient.KcodeException)?.code
+            if (code == 404) policySupported = false
+        }
+    }
+
+    suspend fun load() = coroutineScope {
+        val usageJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.usage(sessionId) } }
+        }
+        val contextJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.context(sessionId) } }
+        }
+        val modelsJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.models(sessionId) } }
+        }
+        val skillsJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.skills(session?.workspaceDir) } }
+        }
+        val sessionJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+        }
+        val proposalsJob = async {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client.knowledgeProposals(status = "pending", limit = 30)
+                }
+            }
+        }
+        val forkJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.forkOptions(sessionId) } }
+        }
+
+        usageJob.await().onSuccess { usage = it }
+        contextJob.await().onSuccess { context = it }
+        modelsJob.await().onSuccess { models = it }
+        skillsJob.await().onSuccess { skills = it.skills }
+        sessionJob.await()
+            .onSuccess { live ->
+                if (live.skillPolicy != null) skillPolicy = live.skillPolicy
+            }
+            .onFailure { /* keep remember(sessionId) seed */ }
+        proposalsJob.await()
+            .onSuccess {
+                proposals = it.proposals.sortedWith(
+                    compareByDescending<KnowledgeProposal> { p -> p.sessionId == sessionId }
+                        .thenByDescending { p -> p.updatedAt ?: p.createdAt ?: 0L }
+                )
+                proposalsSupported = true
+            }
+            .onFailure { err ->
+                val code = (err as? KcodeClient.KcodeException)?.code
+                if (code == 404) {
+                    proposalsSupported = false
+                    proposals = emptyList()
+                }
+            }
+        forkJob.await().onSuccess { forkOptions = it }
+        probeSkillPolicyCapability()
+    }
+
+    fun setDisposition(skillName: String, disposition: String?) {
+        busy = true
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client.updateSkillPolicy(sessionId, dispositions = mapOf(skillName to disposition))
+                }
+            }.onSuccess {
+                skillPolicy = it.skillPolicy
+                policySupported = true
+                message = when (disposition) {
+                    "mandatory" -> "Required $skillName"
+                    "optional" -> "Optional $skillName"
+                    "forbidden" -> "Forbidden $skillName"
+                    null -> "Cleared $skillName"
+                    else -> "Updated $skillName"
+                }
+                onSessionChanged()
+            }.onFailure { err ->
+                val code = (err as? KcodeClient.KcodeException)?.code
+                if (code == 404) {
+                    policySupported = false
+                    message = "Skill policy is not supported by this server"
+                } else {
+                    message = "Failed: ${err.message}"
+                }
+            }
+            busy = false
+            refreshSkillState()
+        }
+    }
+
+    fun reviewProposal(proposal: KnowledgeProposal, decision: String, editedDraft: String? = null) {
+        busy = true
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client.reviewKnowledgeProposal(
+                        proposalId = proposal.id,
+                        decision = decision,
+                        editedDraft = editedDraft,
+                    )
+                }
+            }.onSuccess { result ->
+                // Approve writes before recording; applied=false means the write did not land
+                // and the draft stays pending for retry (kinetick-code #99).
+                message = when {
+                    decision == "approve" && result.applied ->
+                        "Approved ${result.title.ifBlank { proposal.title }} and applied"
+                    decision == "approve" ->
+                        "Apply failed for ${proposal.title}; draft stays pending — retry or reject"
+                    else -> "Rejected ${proposal.title}"
+                }
+                editingProposalId = null
+                // Always refresh so a pending retry card is current (applied or not).
+                refreshSkillState()
+            }.onFailure { err ->
+                val code = (err as? KcodeClient.KcodeException)?.code
+                if (code == 404) {
+                    reviewSupported = false
+                    message = "Knowledge review is not supported by this server"
+                } else if (decision == "approve") {
+                    // Failed apply leaves the proposal pending server-side.
+                    message = "Apply failed; draft stays pending — ${err.message}"
+                    refreshSkillState()
+                } else {
+                    message = "Failed: ${err.message}"
+                }
+            }
+            busy = false
+        }
     }
 
     LaunchedEffect(sessionId) { load() }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .imePadding()
+            .padding(12.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 session?.title ?: "Session",
@@ -588,7 +778,154 @@ fun InfoTab(
             }
         }
 
-        // ---- skills ----
+        // ---- knowledge review ----
+        if (proposalsSupported || proposals.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Knowledge review",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "${proposals.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                "Pending Skill/Memory drafts across sessions. Approve applies the write first; a failed apply stays pending so you can retry or reject.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (!proposalsSupported) {
+                Text(
+                    "This server does not expose knowledge proposals yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (!reviewSupported) {
+                Text(
+                    "Listing works, but approve/reject is not supported by this server.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (proposals.isEmpty()) {
+                Text(
+                    "No pending Skill or Memory drafts.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            proposals.forEach { proposal ->
+                val editing = editingProposalId == proposal.id
+                val fromThisSession = proposal.sessionId == sessionId
+                val actionsEnabled = !busy && reviewSupported
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                proposal.title.ifBlank { proposal.id },
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${proposal.kind}/${proposal.action}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            buildString {
+                                append(proposal.destinationLabel())
+                                proposal.agentName?.takeIf { it.isNotBlank() }?.let {
+                                    append(" · ").append(it)
+                                }
+                                when {
+                                    fromThisSession -> append(" · this session")
+                                    !proposal.sessionId.isNullOrBlank() ->
+                                        append(" · session ").append(proposal.sessionId.take(8))
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (proposal.summary.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                proposal.summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        if (editing && reviewSupported) {
+                            OutlinedTextField(
+                                value = proposalDraftEdit,
+                                onValueChange = { proposalDraftEdit = it },
+                                label = { Text("Draft") },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 4,
+                                maxLines = 12,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    enabled = actionsEnabled && proposalDraftEdit.isNotBlank(),
+                                    onClick = {
+                                        reviewProposal(proposal, "approve", proposalDraftEdit)
+                                    },
+                                ) { Text("Approve edit") }
+                                TextButton(enabled = !busy, onClick = { editingProposalId = null }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        } else {
+                            Text(
+                                proposal.effectiveDraft.ifBlank { "(empty draft)" },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = Fonts.Code,
+                                maxLines = 6,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    enabled = actionsEnabled,
+                                    onClick = { reviewProposal(proposal, "approve") },
+                                ) { Text("Approve") }
+                                OutlinedButton(
+                                    enabled = actionsEnabled,
+                                    onClick = {
+                                        editingProposalId = proposal.id
+                                        proposalDraftEdit = proposal.effectiveDraft
+                                    },
+                                ) { Text("Edit") }
+                                OutlinedButton(
+                                    enabled = actionsEnabled,
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    onClick = { reviewProposal(proposal, "reject") },
+                                ) { Text("Reject") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- skills + policy ----
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Skills", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
@@ -598,17 +935,66 @@ fun InfoTab(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(
-            "Tap a skill to read its description in full.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        skillPolicy?.let { policy ->
+            Text(
+                buildString {
+                    append(if (policy.closed) "Closed catalog" else "Open catalog")
+                    if (policy.mandatory.isNotEmpty()) append(" · require ${policy.mandatory.joinToString()}")
+                    if (policy.forbidden.isNotEmpty()) append(" · forbid ${policy.forbidden.joinToString()}")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = !busy && policySupported,
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    client.updateSkillPolicy(sessionId, closed = !policy.closed)
+                                }
+                            }.onSuccess {
+                                skillPolicy = it.skillPolicy
+                                message = if (it.skillPolicy?.closed == true) "Catalog closed" else "Catalog opened"
+                                onSessionChanged()
+                            }.onFailure { err ->
+                                val code = (err as? KcodeClient.KcodeException)?.code
+                                if (code == 404) {
+                                    policySupported = false
+                                    message = "Skill policy is not supported by this server"
+                                } else {
+                                    message = "Failed: ${err.message}"
+                                }
+                            }
+                            busy = false
+                            refreshSkillState()
+                        }
+                    },
+                ) { Text(if (policy.closed) "Open catalog" else "Close catalog") }
+            }
+        } ?: if (!policySupported) {
+            Text(
+                "Skill policy updates are not supported by this server.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "Tap a skill to set require / optional / forbid for this session.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Spacer(Modifier.height(6.dp))
         if (skills.isEmpty()) {
             Text("No skills reported for this workspace.", style = MaterialTheme.typography.bodySmall)
         }
         skills.take(60).forEach { s ->
             var open by remember(s.name) { mutableStateOf(false) }
+            val disposition = skillPolicy?.dispositionFor(s.name)
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
@@ -628,6 +1014,18 @@ fun InfoTab(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
+                        disposition?.takeIf { it != "hidden" }?.let {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = when (it) {
+                                    "mandatory" -> MaterialTheme.colorScheme.primary
+                                    "forbidden" -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
                         s.source?.takeIf { it.isNotBlank() }?.let {
                             Spacer(Modifier.width(8.dp))
                             Text(
@@ -651,6 +1049,35 @@ fun InfoTab(
                             HorizontalDivider()
                             Spacer(Modifier.height(6.dp))
                             Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (policySupported) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                val current = disposition
+                                listOf(
+                                    "mandatory" to "Require",
+                                    "optional" to "Optional",
+                                    "forbidden" to "Forbid",
+                                ).forEach { (value, label) ->
+                                    if (current == value) {
+                                        Button(
+                                            enabled = !busy,
+                                            onClick = { setDisposition(s.name, null) },
+                                        ) { Text(label) }
+                                    } else {
+                                        OutlinedButton(
+                                            enabled = !busy,
+                                            onClick = { setDisposition(s.name, value) },
+                                        ) { Text(label) }
+                                    }
+                                }
+                                if (current != null) {
+                                    TextButton(
+                                        enabled = !busy,
+                                        onClick = { setDisposition(s.name, null) },
+                                    ) { Text("Clear") }
+                                }
+                            }
                         }
                     }
                 }

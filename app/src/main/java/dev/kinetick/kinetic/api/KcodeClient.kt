@@ -341,6 +341,59 @@ class KcodeClient(val baseUrl: String, val token: String = "") {
         return Wire.skills(get("/skills" + if (params.isEmpty()) "" else "?" + params.joinToString("&")))
     }
 
+    /**
+     * Set per-session Skill dispositions (kinetick-code #99).
+     * Pass `null` in [dispositions] to clear an explicit disposition.
+     * Answers 404 when the Runtime/server lacks the capability.
+     */
+    fun updateSkillPolicy(
+        id: String,
+        dispositions: Map<String, String?>? = null,
+        closed: Boolean? = null,
+    ): SessionInfo {
+        val body = JsonObject()
+        if (dispositions != null) {
+            val o = JsonObject()
+            for ((name, value) in dispositions) {
+                if (value == null) o.add(name, com.google.gson.JsonNull.INSTANCE)
+                else o.addProperty(name, value)
+            }
+            body.add("dispositions", o)
+        }
+        if (closed != null) body.addProperty("closed", closed)
+        return Wire.session(post("/sessions/${enc(id)}/skill-policy", body))
+            ?: throw KcodeException(500, "unexpected skill-policy response")
+    }
+
+    fun knowledgeProposals(
+        status: String? = "pending",
+        kind: String? = null,
+        sessionId: String? = null,
+        limit: Int? = null,
+    ): KnowledgeProposalPage {
+        val params = buildList {
+            if (!status.isNullOrBlank()) add("status=${enc(status)}")
+            if (!kind.isNullOrBlank()) add("kind=${enc(kind)}")
+            if (!sessionId.isNullOrBlank()) add("sessionId=${enc(sessionId)}")
+            if (limit != null) add("limit=$limit")
+        }
+        return Wire.knowledgeProposals(
+            get("/skills/proposals" + if (params.isEmpty()) "" else "?" + params.joinToString("&"))
+        )
+    }
+
+    fun reviewKnowledgeProposal(
+        proposalId: String,
+        decision: String,
+        editedDraft: String? = null,
+        reviewNote: String? = null,
+    ): KnowledgeReviewResult = Wire.knowledgeReview(
+        post(
+            "/skills/proposals/${enc(proposalId)}/review",
+            j("decision" to decision, "editedDraft" to editedDraft, "reviewNote" to reviewNote),
+        )
+    )
+
     // ---- streams ----
 
     /** GET /events — Runtime event stream (notification backbone). */

@@ -278,6 +278,14 @@ object Wire {
         updatedAt = o.l("updatedAt"),
         model = o.o("model")?.let { SessionModel(it.s("providerId"), it.s("modelId"), it.s("variant")) },
         errorMessage = o.s("errorMessage"),
+        skillPolicy = o.o("skillPolicy")?.let { skillPolicy(it) },
+    )
+
+    fun skillPolicy(o: JsonObject): SessionSkillPolicy = SessionSkillPolicy(
+        closed = o.b("closed") ?: false,
+        mandatory = o.strList("mandatory"),
+        optional = o.strList("optional"),
+        forbidden = o.strList("forbidden"),
     )
 
     fun models(text: String): List<ModelEntry> =
@@ -310,6 +318,41 @@ object Wire {
                 )
             },
             hasMore = o.b("hasMore") ?: false,
+        )
+    }
+
+    fun knowledgeProposal(o: JsonObject): KnowledgeProposal = KnowledgeProposal(
+        id = o.s("id") ?: "",
+        kind = o.s("kind") ?: "skill",
+        action = o.s("action") ?: "create",
+        status = o.s("status") ?: "pending",
+        title = o.s("title") ?: "",
+        summary = o.s("summary") ?: "",
+        draft = o.s("draft") ?: "",
+        editedDraft = o.s("editedDraft"),
+        rationale = o.s("rationale"),
+        sessionId = o.s("sessionId"),
+        agentName = o.s("agentName"),
+        targetRef = o.s("targetRef"),
+        createdAt = o.l("createdAt"),
+        updatedAt = o.l("updatedAt"),
+    )
+
+    fun knowledgeProposals(text: String): KnowledgeProposalPage {
+        val el = root(text) ?: return KnowledgeProposalPage()
+        if (el.isJsonArray) {
+            return KnowledgeProposalPage(proposals = el.asJsonArray.objs().map { knowledgeProposal(it) })
+        }
+        val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: return KnowledgeProposalPage()
+        return KnowledgeProposalPage(proposals = o.objs("proposals").map { knowledgeProposal(it) })
+    }
+
+    fun knowledgeReview(text: String): KnowledgeReviewResult {
+        val o = obj(text) ?: return KnowledgeReviewResult()
+        return KnowledgeReviewResult(
+            applied = o.b("applied") ?: false,
+            title = o.s("title") ?: "",
+            status = o.s("status") ?: "",
         )
     }
 
