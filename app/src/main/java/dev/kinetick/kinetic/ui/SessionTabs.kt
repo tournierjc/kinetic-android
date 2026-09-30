@@ -25,6 +25,8 @@ import dev.kinetick.kinetic.api.SessionSkillPolicy
 import dev.kinetick.kinetic.api.SessionUsage
 import dev.kinetick.kinetic.api.SkillEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -336,10 +338,14 @@ fun InfoTab(
     var context by remember { mutableStateOf<ContextSnapshot?>(null) }
     var models by remember { mutableStateOf<List<ModelEntry>>(emptyList()) }
     var skills by remember { mutableStateOf<List<SkillEntry>>(emptyList()) }
-    var skillPolicy by remember { mutableStateOf<SessionSkillPolicy?>(null) }
+    // Seed once per session; later loads only replace from a live getSession projection.
+    var skillPolicy by remember(sessionId) { mutableStateOf(session?.skillPolicy) }
     var proposals by remember { mutableStateOf<List<KnowledgeProposal>>(emptyList()) }
     var proposalsSupported by remember { mutableStateOf(true) }
+    /** List works but POST /review may be missing — keep the section, disable actions. */
+    var reviewSupported by remember { mutableStateOf(true) }
     var policySupported by remember { mutableStateOf(true) }
+    var policyProbed by remember(sessionId) { mutableStateOf(false) }
     var forkOptions by remember { mutableStateOf<ForkOptions?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf(false) }
@@ -351,21 +357,8 @@ fun InfoTab(
     var editingProposalId by remember { mutableStateOf<String?>(null) }
     var proposalDraftEdit by remember { mutableStateOf("") }
 
-    suspend fun load() {
-        runCatching { withContext(Dispatchers.IO) { client.usage(sessionId) } }.onSuccess { usage = it }
-        runCatching { withContext(Dispatchers.IO) { client.context(sessionId) } }.onSuccess { context = it }
-        runCatching { withContext(Dispatchers.IO) { client.models(sessionId) } }.onSuccess { models = it }
-        runCatching { withContext(Dispatchers.IO) { client.skills(session?.workspaceDir) } }
-            .onSuccess { skills = it.skills }
-        runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
-            .onSuccess {
-                skillPolicy = it.skillPolicy
-                // Prefer the live session projection for policy badges.
-            }
-            .onFailure { /* keep last known policy */ }
-        if (skillPolicy == null) skillPolicy = session?.skillPolicy
+    suspend fun refreshProposals() {
         // Match TUI `/skills review`: list all pending drafts, not only this session.
-        // Idle drafts attach to root sessions; filtering by the open sessionId would hide them.
         runCatching {
             withContext(Dispatchers.IO) {
                 client.knowledgeProposals(status = "pending", limit = 30)
@@ -383,8 +376,92 @@ fun InfoTab(
                 proposals = emptyList()
             }
         }
-        runCatching { withContext(Dispatchers.IO) { client.forkOptions(sessionId) } }
-            .onSuccess { forkOptions = it }
+    }
+
+    suspend fun refreshSkillState() {
+        runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+            .onSuccess { live ->
+                // Only overwrite when the live projection includes skillPolicy. A missing
+                // key must not resurrect the parent-list snapshot after a local update.
+                if (live.skillPolicy != null) skillPolicy = live.skillPolicy
+            }
+            .onFailure { /* keep last known policy */ }
+        runCatching { withContext(Dispatchers.IO) { client.skills(session?.workspaceDir) } }
+            .onSuccess { skills = it.skills }
+        refreshProposals()
+    }
+
+    /** One-shot probe so catalog/disposition controls degrade before the first failed tap. */
+    suspend fun probeSkillPolicyCapability() {
+        if (policyProbed || !policySupported) return
+        policyProbed = true
+        // Empty dispositions is a no-op patch that still exercises the route (404 → unsupported).
+        runCatching {
+            withContext(Dispatchers.IO) {
+                client.updateSkillPolicy(sessionId, dispositions = emptyMap())
+            }
+        }.onSuccess {
+            if (it.skillPolicy != null) skillPolicy = it.skillPolicy
+            policySupported = true
+        }.onFailure { err ->
+            val code = (err as? KcodeClient.KcodeException)?.code
+            if (code == 404) policySupported = false
+        }
+    }
+
+    suspend fun load() = coroutineScope {
+        val usageJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.usage(sessionId) } }
+        }
+        val contextJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.context(sessionId) } }
+        }
+        val modelsJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.models(sessionId) } }
+        }
+        val skillsJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.skills(session?.workspaceDir) } }
+        }
+        val sessionJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
+        }
+        val proposalsJob = async {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client.knowledgeProposals(status = "pending", limit = 30)
+                }
+            }
+        }
+        val forkJob = async {
+            runCatching { withContext(Dispatchers.IO) { client.forkOptions(sessionId) } }
+        }
+
+        usageJob.await().onSuccess { usage = it }
+        contextJob.await().onSuccess { context = it }
+        modelsJob.await().onSuccess { models = it }
+        skillsJob.await().onSuccess { skills = it.skills }
+        sessionJob.await()
+            .onSuccess { live ->
+                if (live.skillPolicy != null) skillPolicy = live.skillPolicy
+            }
+            .onFailure { /* keep remember(sessionId) seed */ }
+        proposalsJob.await()
+            .onSuccess {
+                proposals = it.proposals.sortedWith(
+                    compareByDescending<KnowledgeProposal> { p -> p.sessionId == sessionId }
+                        .thenByDescending { p -> p.updatedAt ?: p.createdAt ?: 0L }
+                )
+                proposalsSupported = true
+            }
+            .onFailure { err ->
+                val code = (err as? KcodeClient.KcodeException)?.code
+                if (code == 404) {
+                    proposalsSupported = false
+                    proposals = emptyList()
+                }
+            }
+        forkJob.await().onSuccess { forkOptions = it }
+        probeSkillPolicyCapability()
     }
 
     fun setDisposition(skillName: String, disposition: String?) {
@@ -415,7 +492,7 @@ fun InfoTab(
                 }
             }
             busy = false
-            load()
+            refreshSkillState()
         }
     }
 
@@ -441,16 +518,17 @@ fun InfoTab(
                     else -> "Rejected ${proposal.title}"
                 }
                 editingProposalId = null
-                load()
+                // Always refresh so a pending retry card is current (applied or not).
+                refreshSkillState()
             }.onFailure { err ->
                 val code = (err as? KcodeClient.KcodeException)?.code
                 if (code == 404) {
-                    proposalsSupported = false
+                    reviewSupported = false
                     message = "Knowledge review is not supported by this server"
                 } else if (decision == "approve") {
                     // Failed apply leaves the proposal pending server-side.
                     message = "Apply failed; draft stays pending — ${err.message}"
-                    load()
+                    refreshSkillState()
                 } else {
                     message = "Failed: ${err.message}"
                 }
@@ -461,7 +539,13 @@ fun InfoTab(
 
     LaunchedEffect(sessionId) { load() }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .imePadding()
+            .padding(12.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 session?.title ?: "Session",
@@ -721,6 +805,12 @@ fun InfoTab(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            } else if (!reviewSupported) {
+                Text(
+                    "Listing works, but approve/reject is not supported by this server.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             } else if (proposals.isEmpty()) {
                 Text(
                     "No pending Skill or Memory drafts.",
@@ -730,6 +820,7 @@ fun InfoTab(
             proposals.forEach { proposal ->
                 val editing = editingProposalId == proposal.id
                 val fromThisSession = proposal.sessionId == sessionId
+                val actionsEnabled = !busy && reviewSupported
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
@@ -777,7 +868,7 @@ fun InfoTab(
                             )
                         }
                         Spacer(Modifier.height(6.dp))
-                        if (editing) {
+                        if (editing && reviewSupported) {
                             OutlinedTextField(
                                 value = proposalDraftEdit,
                                 onValueChange = { proposalDraftEdit = it },
@@ -789,7 +880,7 @@ fun InfoTab(
                             Spacer(Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
-                                    enabled = !busy && proposalDraftEdit.isNotBlank(),
+                                    enabled = actionsEnabled && proposalDraftEdit.isNotBlank(),
                                     onClick = {
                                         reviewProposal(proposal, "approve", proposalDraftEdit)
                                     },
@@ -810,18 +901,18 @@ fun InfoTab(
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
-                                    enabled = !busy,
+                                    enabled = actionsEnabled,
                                     onClick = { reviewProposal(proposal, "approve") },
                                 ) { Text("Approve") }
                                 OutlinedButton(
-                                    enabled = !busy,
+                                    enabled = actionsEnabled,
                                     onClick = {
                                         editingProposalId = proposal.id
                                         proposalDraftEdit = proposal.effectiveDraft
                                     },
                                 ) { Text("Edit") }
                                 OutlinedButton(
-                                    enabled = !busy,
+                                    enabled = actionsEnabled,
                                     colors = ButtonDefaults.outlinedButtonColors(
                                         contentColor = MaterialTheme.colorScheme.error
                                     ),
@@ -879,7 +970,7 @@ fun InfoTab(
                                 }
                             }
                             busy = false
-                            load()
+                            refreshSkillState()
                         }
                     },
                 ) { Text(if (policy.closed) "Open catalog" else "Close catalog") }
