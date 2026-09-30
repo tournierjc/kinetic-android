@@ -158,6 +158,72 @@ class WireTest {
     }
 
     @Test
+    fun sessionSkillPolicy() {
+        val s = Wire.session(
+            """
+            {
+              "sessionId":"s1",
+              "title":"Policy",
+              "skillPolicy":{
+                "closed":true,
+                "mandatory":["pdf"],
+                "optional":["docs"],
+                "forbidden":["xlsx"]
+              }
+            }
+            """.trimIndent()
+        )!!
+        val policy = s.skillPolicy!!
+        assertEquals(true, policy.closed)
+        assertEquals(listOf("pdf"), policy.mandatory)
+        assertEquals(listOf("docs"), policy.optional)
+        assertEquals(listOf("xlsx"), policy.forbidden)
+        assertEquals("mandatory", policy.dispositionFor("PDF"))
+        assertEquals("forbidden", policy.dispositionFor("xlsx"))
+        assertEquals("hidden", policy.dispositionFor("unknown"))
+    }
+
+    @Test
+    fun knowledgeProposalsAndReview() {
+        val page = Wire.knowledgeProposals(
+            """
+            {
+              "proposals":[
+                {
+                  "id":"kp_1",
+                  "kind":"skill",
+                  "action":"create",
+                  "status":"pending",
+                  "title":"PDF workflow",
+                  "summary":"Capture the pdf flow",
+                  "draft":"---\\nname: pdf\\n---\\n# PDF",
+                  "sessionId":"s1"
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        assertEquals(1, page.proposals.size)
+        val p = page.proposals.first()
+        assertEquals("kp_1", p.id)
+        assertEquals("skill", p.kind)
+        assertEquals("create", p.action)
+        assertEquals("PDF workflow", p.title)
+        assertTrue(p.effectiveDraft.contains("pdf"))
+
+        val bare = Wire.knowledgeProposals(
+            """[{"id":"kp_2","kind":"memory","action":"improve","status":"pending","title":"Note","draft":"remember this"}]"""
+        )
+        assertEquals(1, bare.proposals.size)
+        assertEquals("memory", bare.proposals.first().kind)
+
+        val review = Wire.knowledgeReview("""{"applied":true,"title":"PDF workflow","status":"approved"}""")
+        assertEquals(true, review.applied)
+        assertEquals("approved", review.status)
+        assertEquals("PDF workflow", review.title)
+    }
+
+    @Test
     fun modelRoster() {
         val models = Wire.models(dec(MODELS))
         assertTrue(models.isNotEmpty())

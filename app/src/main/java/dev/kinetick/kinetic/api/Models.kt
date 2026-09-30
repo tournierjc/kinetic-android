@@ -185,6 +185,8 @@ data class SessionInfo(
     val updatedAt: Long? = null,
     val model: SessionModel? = null,
     val errorMessage: String? = null,
+    /** Per-session Skill dispositions from kinetick-code #99. */
+    val skillPolicy: SessionSkillPolicy? = null,
 ) {
     /**
      * Delegated work stays out of the main session list. The server forces
@@ -225,6 +227,56 @@ data class SkillEntry(
 }
 
 data class SkillPage(val skills: List<SkillEntry> = emptyList(), val hasMore: Boolean = false)
+
+/**
+ * Session Skill policy projected by the Runtime (kinetick-code #99).
+ * Unlisted Skills stay optional unless [closed] is true.
+ */
+data class SessionSkillPolicy(
+    val closed: Boolean = false,
+    val mandatory: List<String> = emptyList(),
+    val optional: List<String> = emptyList(),
+    val forbidden: List<String> = emptyList(),
+) {
+    fun dispositionFor(name: String): String? {
+        val key = name.trim().lowercase()
+        if (key.isEmpty()) return null
+        if (mandatory.any { it.equals(key, ignoreCase = true) }) return "mandatory"
+        if (forbidden.any { it.equals(key, ignoreCase = true) }) return "forbidden"
+        if (optional.any { it.equals(key, ignoreCase = true) }) return "optional"
+        return if (closed) "hidden" else null
+    }
+}
+
+/** Idle Skill/Memory draft awaiting human approve/reject. */
+data class KnowledgeProposal(
+    val id: String,
+    val kind: String,
+    val action: String,
+    val status: String,
+    val title: String,
+    val summary: String = "",
+    val draft: String = "",
+    val editedDraft: String? = null,
+    val rationale: String? = null,
+    val sessionId: String? = null,
+    val agentName: String? = null,
+    val targetRef: String? = null,
+    val createdAt: Long? = null,
+    val updatedAt: Long? = null,
+) {
+    val effectiveDraft: String get() = editedDraft ?: draft
+}
+
+data class KnowledgeProposalPage(
+    val proposals: List<KnowledgeProposal> = emptyList(),
+)
+
+data class KnowledgeReviewResult(
+    val applied: Boolean = false,
+    val title: String = "",
+    val status: String = "",
+)
 
 // ---- delegation / background / queue ----
 

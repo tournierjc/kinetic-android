@@ -32,10 +32,15 @@ drive your kcode Sessions from your phone.
   status, `Stop tree`, plus background tasks. Tap a row to open that session.
 - **Queue** — snapshot, continue, steer an item into the live turn, drop an item.
 - **Info** — token/cost usage, context-window gauge, model picker from the server
-  roster, rename/pin/archive, fork, and the skill list.
+  roster, rename/pin/archive, fork, the skill list with per-session
+  require/optional/forbid dispositions, and pending Skill/Memory draft review
+  (approve / edit+approve / reject).
 
 Every capability-optional endpoint answers `404` when the active Runtime lacks it;
-the client surfaces that instead of silently failing.
+the client surfaces that instead of silently failing. Skill policy and knowledge
+review require a session server that exposes
+`POST /sessions/:id/skill-policy`, `GET /skills/proposals`, and
+`POST /skills/proposals/:id/review` (kinetick-code #99 / #100).
 
 ## Build
 
