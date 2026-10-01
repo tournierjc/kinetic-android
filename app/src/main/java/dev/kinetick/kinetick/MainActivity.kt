@@ -15,6 +15,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import dev.kinetick.kinetick.events.EventStreamService
+import dev.kinetick.kinetick.events.Notify
 import dev.kinetick.kinetick.ui.KinetickNavGraph
 import dev.kinetick.kinetick.ui.KinetickTheme
 import dev.kinetick.kinetick.ui.ThemeMode
@@ -39,7 +40,8 @@ class MainActivity : ComponentActivity() {
             KinetickTheme(mode) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     KinetickNavGraph(
-                        initialSessionId = intent?.getStringExtra("session_id"),
+                        initialSessionId = intent?.getStringExtra(Notify.EXTRA_SESSION),
+                        initialServerId = intent?.getStringExtra(Notify.EXTRA_SERVER_ID),
                         themeMode = mode,
                         onSetTheme = { next -> scope.launch { settings.setThemeMode(next.id) } },
                     )

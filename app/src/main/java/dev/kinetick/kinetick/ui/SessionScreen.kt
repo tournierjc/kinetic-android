@@ -23,6 +23,7 @@ import dev.kinetick.kinetick.api.KcodeClient
 import dev.kinetick.kinetick.api.PermissionRequest
 import dev.kinetick.kinetick.api.SessionInfo
 import dev.kinetick.kinetick.api.Wire
+import dev.kinetick.kinetick.data.ServerRegistry
 import dev.kinetick.kinetick.data.SettingsStore
 import dev.kinetick.kinetick.events.EventBus
 import kotlinx.coroutines.Dispatchers
@@ -37,21 +38,29 @@ private val TABS = listOf("Chat", "Agents", "Queue", "Info")
 
 @Composable
 fun SessionScreen(
+    serverId: String,
     sessionId: String,
     onBack: () -> Unit,
-    onOpenSession: (String) -> Unit,
+    onOpenSession: (String, String) -> Unit,
     onSettings: () -> Unit,
     themeMode: ThemeMode,
     onSetTheme: (ThemeMode) -> Unit,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as KinetickApp
-    val server by app.settings.server.collectAsState(
-        initial = SettingsStore.ServerSettings(SettingsStore.NO_SERVER, ""),
-    )
-    val client = remember(server) { KcodeClient(server.baseUrl, server.token) }
+    val config by app.settings.config.collectAsState(initial = SettingsStore.Config())
+    val server = config.server(serverId)
+    val resolved by produceState<dev.kinetick.kinetick.data.ServerEntry?>(null, serverId, config) {
+        value = if (serverId.isNotBlank() && server == null) {
+            KinetickApp.resolveServer(context, sessionId)
+        } else null
+    }
+    val effectiveServer = server ?: resolved
+    val client: KcodeClient = effectiveServer?.let { KinetickApp.clientFor(it) }
+        ?: remember { KcodeClient("", "") }
     val configured = client.configured
-    val store = remember(sessionId, server.baseUrl) { ChatStore() }
+    val serverLabel = ServerRegistry.label(effectiveServer)
+    val store = remember(sessionKey(serverId, sessionId)) { ChatStore() }
     val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
 
@@ -85,7 +94,7 @@ fun SessionScreen(
             .onSuccess { interact = it }
     }
 
-    LaunchedEffect(sessionId, server) {
+    LaunchedEffect(sessionId, effectiveServer) {
         if (!configured) return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { client.getSession(sessionId) } }
             .onSuccess { session = it }
@@ -98,9 +107,12 @@ fun SessionScreen(
         reloadInteractions()
     }
 
-    // Runtime events relayed by the foreground service refresh the input surface.
-    LaunchedEffect(sessionId) {
+    // Runtime events relayed by the foreground service refresh the input
+    // surface — only from the server this screen is opened against.
+    LaunchedEffect(sessionId, effectiveServer?.id) {
+        val myServer = effectiveServer?.id
         EventBus.events.collect { ev ->
+            if (ev.serverId != null && myServer != null && ev.serverId != myServer) return@collect
             if (ev.data.contains(sessionId) ||
                 ev.type.startsWith("questionnaire") ||
                 ev.type.startsWith("permission")
@@ -204,6 +216,7 @@ fun SessionScreen(
                         }
                     }
                     val subtitle = listOfNotNull(
+                        serverLabel.takeIf { effectiveServer != null },
                         session?.takeIf { it.isSubagentSession() }?.let { "subagent" },
                         session?.workspaceDir?.substringAfterLast('/')?.takeIf { it.isNotBlank() },
                     ).joinToString("  ·  ")
@@ -290,7 +303,7 @@ fun SessionScreen(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
-                    TextButton(onClick = { onOpenSession(parentId) }) { Text("Open parent") }
+                    TextButton(onClick = { onOpenSession(serverId, parentId) }) { Text("Open parent") }
                 }
             }
         }
@@ -301,7 +314,8 @@ fun SessionScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (server.baseUrl.isBlank()) "No kcode server configured." else "Server token is required.",
+                    if (effectiveServer == null) "This session's server is no longer registered."
+                    else "Server token is required.",
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -349,7 +363,7 @@ fun SessionScreen(
                 1 -> AgentsTab(
                     client = client,
                     sessionId = sessionId,
-                    onOpenSession = onOpenSession,
+                    onOpenSession = { childId -> onOpenSession(serverId, childId) },
                     onCount = { subagentCount = it },
                     onTreeStopped = { scope.launch { reloadHistory() } },
                 )
@@ -364,7 +378,7 @@ fun SessionScreen(
                                 .onSuccess { session = it }
                         }
                     },
-                    onForked = onOpenSession,
+                    onForked = { newId -> onOpenSession(serverId, newId) },
                     onSessionDeleted = onBack,
                 )
             }

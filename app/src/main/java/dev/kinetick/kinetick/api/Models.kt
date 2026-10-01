@@ -187,6 +187,11 @@ data class SessionInfo(
     val errorMessage: String? = null,
     /** Per-session Skill dispositions from kinetick-code #99. */
     val skillPolicy: SessionSkillPolicy? = null,
+    /**
+     * Client-only: which registered server this session came from. Server-side
+     * JSON never carries it; list/merge code tags rows as they arrive.
+     */
+    val serverId: String = "",
 ) {
     /**
      * Delegated work stays out of the main session list. The server forces

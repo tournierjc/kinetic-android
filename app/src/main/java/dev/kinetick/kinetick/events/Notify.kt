@@ -15,6 +15,10 @@ import dev.kinetick.kinetick.R
  * Notification backbone: the Runtime event stream (GET /events) emits
  * questionnaire.ask / permission.ask / session.queue.updated — anything that
  * means "the agent is waiting for a human" gets a heads-up notification.
+ *
+ * With several servers registered the server's label rides in the title/body
+ * and the notification carries `extra_server_id`, so a tap can reopen the
+ * exact server the event came from.
  */
 object Notify {
 
@@ -22,6 +26,8 @@ object Notify {
     const val CHANNEL_STREAM = "stream"
     const val NOTIF_STREAM = 1
     const val NOTIF_INPUT_BASE = 1000
+    const val EXTRA_SESSION = "session_id"
+    const val EXTRA_SERVER_ID = "server_id"
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -35,14 +41,24 @@ object Notify {
             NotificationChannel(
                 CHANNEL_STREAM, "Event stream",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Keeps the kcode event stream alive" }
+            ).apply { description = "Keeps the kcode event streams alive" }
         )
     }
 
-    fun inputNeeded(context: Context, sessionKey: String, title: String, body: String, id: Int) {
+    fun inputNeeded(
+        context: Context,
+        sessionKey: String,
+        title: String,
+        body: String,
+        id: Int,
+        serverId: String? = null,
+        serverLabel: String? = null,
+    ) {
+        val fullTitle = if (serverLabel.isNullOrBlank()) title else "$title · $serverLabel"
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("session_id", sessionKey)
+            putExtra(EXTRA_SESSION, sessionKey)
+            serverId?.let { putExtra(EXTRA_SERVER_ID, it) }
         }
         val pi = PendingIntent.getActivity(
             context, id, intent,
@@ -53,7 +69,7 @@ object Notify {
             NOTIF_INPUT_BASE + (id % 1000),
             NotificationCompat.Builder(context, CHANNEL_INPUT)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(title)
+                .setContentTitle(fullTitle)
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))
                 .setAutoCancel(true)
