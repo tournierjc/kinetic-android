@@ -1,4 +1,4 @@
-# Kinetic (kinetic-android)
+# Kinetick (kinetick-android)
 
 Android companion for [`kcode --server`](https://github.com/tournierjc/kinetick-code) —
 drive your kcode Sessions from your phone.

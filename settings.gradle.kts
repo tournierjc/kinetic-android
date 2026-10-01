@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "kinetic-android"
+rootProject.name = "kinetick-android"
 include(":app")

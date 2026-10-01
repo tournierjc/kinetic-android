@@ -8,7 +8,7 @@
 
     <application
         android:name=".KineticApp"
-        android:label="Kinetic"
+        android:label="Kinetick"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

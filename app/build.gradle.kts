@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.kinetick.kinetic"
+    namespace = "dev.kinetick.kinetick"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.kinetick.kinetic"
+        applicationId = "dev.kinetick.kinetick"
         minSdk = 26
         targetSdk = 35
         versionCode = 7
